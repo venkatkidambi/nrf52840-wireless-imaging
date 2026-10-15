@@ -1,0 +1,8 @@
+/build/
+/deps/
+/.cache/
+__pycache__/
+*.pyc
+.DS_Store
+/experiments/
+

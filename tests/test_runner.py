@@ -18,7 +18,8 @@ import run_experiment as run
 import usb_identity as usb
 from test_safety import image
 
-CONFIG = dict(freq_mhz=2440, tx_interval_ms=10, packet_target=10000, tx_power_dbm=0)
+CONFIG = dict(freq_mhz=2440, tx_interval_ms=10, packet_target=10000, tx_power_dbm=0,
+              payload_bytes=32, tx_interval_us=10000, run_tag=1)
 RX = usb.Device(10, "rx-boot", 0x2886, 0x45, 0x100000, "/Volumes/XIAO-SENSE 1")
 TX = usb.Device(20, "tx-boot", 0x2886, 0x45, 0x200000, "/Volumes/XIAO-SENSE")
 APP = usb.Device(30, "rx-app", 0xcafe, 0x4001, RX.location, "/dev/cu.usbmodem999")
@@ -31,7 +32,7 @@ def report(**changes):
 
 class Arguments(unittest.TestCase):
     def test_missing_arguments_use_defaults(self):
-        self.assertEqual(run.arguments([]), dict(CONFIG, freq_mhz=2402))
+        self.assertEqual(run.arguments([]), CONFIG)
         self.assertEqual(run.arguments(["2440"]), CONFIG)
         self.assertEqual(run.arguments(["2440", "20"])["tx_interval_ms"], 20)
 
@@ -212,7 +213,7 @@ class Orchestration(unittest.TestCase):
     def test_matching_images_are_required(self):
         raw = image() + firmware.CONFIG_MAGIC
         import struct
-        raw += struct.pack("<4I", 2440, 10, 10000, 0)
+        raw += struct.pack("<7I", 2440, 10, 10000, 0, 32, 10000, 1)
         self.assertEqual(firmware.image_configuration(raw), CONFIG)
         with self.assertRaises(ValueError):
             firmware.image_configuration(image())

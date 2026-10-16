@@ -10,14 +10,15 @@ RAM_START, RAM_END, STACK_SIZE = 0x20008000, 0x20040000, 8192
 FAMILY = 0xADA52840
 BOARD_FAMILY = 0x28860045
 MAGIC0, MAGIC1, MAGIC_END = 0x0A324655, 0x9E5D5157, 0x0AB16F30
-CONFIG_MAGIC = b"IMAGING-CONFIG1\0"
+CONFIG_MAGIC = b"IMAGING-CONFIG2\0"
 
 def image_configuration(binary):
     require(binary.count(CONFIG_MAGIC) == 1, "Missing or ambiguous embedded experiment configuration")
     offset = binary.index(CONFIG_MAGIC) + len(CONFIG_MAGIC)
-    require(offset + 16 <= len(binary), "Truncated embedded experiment configuration")
-    values = struct.unpack_from("<4I", binary, offset)
-    return dict(zip(("freq_mhz", "tx_interval_ms", "packet_target", "tx_power_dbm"), values))
+    require(offset + 28 <= len(binary), "Truncated embedded experiment configuration")
+    values = struct.unpack_from("<7I", binary, offset)
+    return dict(zip(("freq_mhz", "tx_interval_ms", "packet_target", "tx_power_dbm",
+                     "payload_bytes", "tx_interval_us", "run_tag"), values))
 
 def require(condition, message):
     if not condition:

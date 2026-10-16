@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 void time_init(void);
+/* Stop the independent 1 ms wakeup after TX finishes; TIMER0 keeps counting. */
+void time_wakeup_stop(void);
 uint32_t time_us(void);
 bool clock_hf_running(void);
 bool clock_init(void);

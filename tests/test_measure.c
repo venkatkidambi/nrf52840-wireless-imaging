@@ -4,6 +4,11 @@
 
 int main(void)
 {
+    assert(measurement_deadline_safe(100, 108));
+    assert(!measurement_deadline_safe(100, 107));
+    assert(!measurement_deadline_safe(100, 99));
+    assert(measurement_deadline_safe(0xfffffffc, 4));
+    assert(!measurement_deadline_safe(4, 0xfffffffc));
     measurement_t s = {0};
     assert(measurement_mean(&s) == 0);
     measurement_add(&s, 140);

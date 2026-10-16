@@ -1,66 +1,109 @@
-# nRF52840 Wireless Imaging — Milestone 1.2
+# nRF52840 Wireless Imaging — Milestone 2
 
-Bare-metal C11 firmware for two Seeed XIAO nRF52840 boards. TX sends the existing
-deterministic 32-byte packet over proprietary Nordic 2 Mbps RADIO. RX validates
-CRC, payload, and sequence progression, and reports once per second over native
-USB CDC. Frequency, TX interval, and packet target are now build settings.
-Default: **2402 MHz, 10 ms between attempt starts, 10,000 attempts, 0 dBm**.
+Bare-metal C11 synthetic throughput benchmark for two Seeed XIAO nRF52840 boards.
+The shared proprietary 2 Mbps RADIO driver uses EasyDMA, hardware CRC16,
+interrupt-driven double-buffered RX, and TIMER/PPI TX scheduling. Native USB CDC
+on RX reports cumulative diagnostics once per second. TX sends three final
+telemetry pages so RX can report measured TX timing without adding USB to TX.
+No application packet or telemetry page is retransmitted; there are no ACKs.
 
-The user reports successful reception with the preceding firmware, zero payload
-failures, and about 1.24% cumulative sequence gaps at one meter. This revision
-adds measurement to investigate those gaps; it does not establish their cause.
-Initial implementation used software checks only. A later operator-run 2440 MHz
-experiment reached sequence 9999 despite a host write error; a read-only RX
-inspection recovered its final counters. See validation results for evidence
-and the missing continuous-log limitation.
+**Default: 2440 MHz, 0 dBm, 32 application bytes, 10,000 packets, 10 ms interval.**
+M2 firmware has been compiled and host-tested; its throughput and reduced RX
+turnaround have **not been measured on hardware**. No boards were flashed during
+implementation. The 450–600 ms image target remains an experiment question.
 
-See [the experiment procedure and timing definitions](docs/experiments.md) for
-all six required experiments, safe flashing commands, CSV collection, and how
-to interpret the measurements. [Validation results](docs/validation.md) record
-the builds, host tests, memory use, and remaining hardware checks.
+See [experiment procedure, timing definitions, and state-machine rationale](docs/experiments.md)
+and [software validation and remaining hardware checks](docs/validation.md).
+No Arduino runtime, RTOS, BLE/SoftDevice API, heap allocation, or camera/pin
+access is included. Existing bootloader, SoftDevice, and flash-layout checks remain.
 
-No Arduino runtime, RTOS, BLE, SoftDevice calls, dynamic allocation, camera
-initialization, or camera-pin access is included. The installed SoftDevice and
-bootloader remain in flash. TX does not provide USB serial in application mode.
+## First high-speed experiment
 
-## One-command dual-board experiment (macOS)
-
-Connect both boards and double-press each reset button to enter UF2 mode. Close
-other RX monitors, then run from an interactive terminal:
+After inspecting the build results, connect both boards and double-reset both
+into UF2 mode. Close other serial monitors and run from an interactive terminal:
 
 ```sh
-cd ~/Documents/Code/nrf52840-wireless-imaging
-./scripts/run_experiment.sh 2440 10 10000
+./scripts/run_experiment.sh --frequency 2440 --payload 32 --interval-us 1000 --packets 10000
 ```
 
-Omitted trailing arguments default to **2402 MHz, 10 ms, 10000 attempts**.
-The runner builds and validates both images, physically identifies the boards,
-and requires you to type `FLASH` before writing firmware. On first use it asks
-you to select each current mount and unplug/reconnect that physical board to
-verify the selection. Unique bootloader USB serials are saved in
-`experiments/boards.json`; volume names are never saved as reusable identities.
-Unverifiable mappings require physical identification again. Keep cables and
-USB ports fixed after confirmation.
+The runner builds and validates matching images, identifies physical RX and TX,
+and asks for the existing `FLASH` confirmation. RX is flashed first; TX is
+flashed only after CDC enumeration and a fresh, clean report with matching
+configuration and run tag. Unique USB identities are used, never a remembered
+mount suffix. Ambiguous identification stops the operation. See the flash
+procedure below for the retained safety checks.
 
-RX is flashed first. Its CDC port is discovered from USB ancestry and physical
-location, then the existing monitor/CSV logger starts. TX is flashed only after
-a fresh complete RX report confirms matching settings, readiness, and zero
-prior packet activity. Both copied images carry matching embedded configuration
-metadata; SHA-256 hashes identify the exact firmware in the results.
+Then explore a larger packet and maximum scheduling:
 
-Results are saved under `experiments/<timestamp>_2440MHz_10ms_10000/` as
-`config.json`, `rx.log`, `rx.csv`, and `summary.json`, with `runner.log` and copies
-of both validated UF2s/manifests. Ctrl-C stops/reaps child processes and saves an
-interrupted summary. Nothing erases the chip or changes the verified application
-region `[0x27000, 0xEA000)`.
+```sh
+./scripts/run_experiment.sh --frequency 2440 --payload 240 --interval-us 1200 --packets 10000
+./scripts/run_experiment.sh --frequency 2440 --payload 240 --max-throughput --packets 10000
+```
 
-Exit 0 means the final target sequence was observed followed by stable idle
-reports and both host copies completed. Exit 2 means an unconfirmed copy,
-incomplete tail evidence, or a timeout; a successful UF2
-copy never proves packet transmission. See [runner behavior and completion
-criteria](docs/experiments.md#automated-runner-milestone-12) for identity handling,
-timeouts, recovery, and measurement limitations. Hardware flashing and a full
-two-board run remain to be validated by the operator.
+The legacy positional CLI remains: `./scripts/run_experiment.sh 2440 10 10000`
+means milliseconds. **Payload 240 / interval 500 us is impossible and rejected**:
+the packet alone occupies 1024 us on air.
+
+Results in `experiments/<timestamp>_<MHz>_<payload>B_<interval>us_<count>/` include
+configuration, frozen UF2s/manifests, raw USB output, per-report `rx.csv`, and
+`summary.json` / `summary.csv`. A fresh random 32-bit run tag binds both builds
+and on-air packets. TX statistics are valid only when `tx_stats_mask=7`; missing
+telemetry leaves measured TX goodput and delivery ratio unavailable, never
+replaced by configured values. Ctrl-C preserves partial evidence and reaps children.
+
+## Packet sizes and scheduling
+
+`APP_PAYLOAD_SIZE` is useful synthetic data, excluding the eight-byte header.
+The fixed format omits S0/LENGTH/S1. `PCNF1.MAXLEN=STATLEN=payload+8`, both limited
+to 255; maximum application data is therefore **247 bytes**. CRC, preamble and
+address are additional on-air bytes, not DMA bytes.
+
+| Application bytes | DMA bytes | On-air bytes | Airtime us | Minimum fixed interval us | Feasible requested matrix intervals us |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 32 | 40 | 48 | 192 | 212 | 250, 500, 1000, max |
+| 64 | 72 | 80 | 320 | 340 | 500, 1000, max |
+| 128 | 136 | 144 | 576 | 596 | 1000, max |
+| 240 | 248 | 256 | 1024 | 1044 | max |
+| 247 | 255 | 263 | 1052 | 1072 | max (extra boundary configuration) |
+
+All integer payloads 32–247 and fixed intervals from their minimum through
+60,000,000 us are accepted. The 20 us handoff allowance is an engineering admission
+budget, **not verified sustained performance**. Actual late schedules are counted
+and rebased; no catch-up burst occurs. Zero selects maximum mode. Neither 150 nor
+200 us fits a supported payload plus the admission allowance.
+
+```sh
+make build APP_PAYLOAD_SIZE=240 TX_INTERVAL_US=1200 RADIO_FREQ_MHZ=2440 TX_PACKET_COUNT=10000
+make build APP_PAYLOAD_SIZE=240 TX_INTERVAL_US=0
+make build RADIO_FREQ_MHZ=2440 TX_INTERVAL_MS=10  # legacy units
+make test
+```
+
+Do not set conflicting microsecond and millisecond values. Generated
+`tx_interval_ms` is only a compatibility field (integer division); use
+`tx_interval_us` for analysis. `RUN_ID=1` is the direct-build default; choose a new
+shared value for manually flashed runs. `TX_PACKET_COUNT=0` runs until the reserved
+telemetry sequence boundary (0xfffffff0), then stops instead of wrapping. The
+runner requires a positive bounded count. M2 packets/metadata are incompatible
+with M1 firmware; rebuild and flash both roles together.
+
+## Matrix without hardware writes
+
+```sh
+# Save admission decisions and commands only:
+python3 scripts/benchmark_matrix.py --output experiments/m2-plan
+# Compile all 10 feasible matrix entries, reject the other 14; never flash:
+python3 scripts/benchmark_matrix.py --build --output build/m2-matrix-new
+# Explicit operator-run matrix; normal FLASH/identity checks for each entry:
+python3 scripts/benchmark_matrix.py --run --output experiments/m2-hardware
+```
+
+Output directories must be new. `--payloads`, `--intervals-us` (0=max),
+`--frequency`, and `--packets` customize the matrix. `matrix.json` and `matrix.csv`
+are saved after each entry. Hardware mode asks the operator to double-reset both
+boards between entries; this firmware intentionally has no remote bootloader reset.
+Use separate output directories for repeated trials. Builds share `build/` and
+must be sequential, including direct Make invocations.
 
 ## Build on macOS
 
@@ -126,30 +169,11 @@ make test         # Protocol/timing + configuration/CSV/image/flashing tests
 make clean        # Deletes build/ only; retains dependencies and archive cache
 ```
 
-Experiment settings apply to **both** images. Both boards must be rebuilt and
-flashed with the same settings; RX cannot read TX settings over the unchanged
-packet format. Keep settings on flash commands too, or export them as shown in
-the experiment procedure:
-
-```sh
-make clean
-make build RADIO_FREQ_MHZ=2402 TX_INTERVAL_MS=10 TX_PACKET_COUNT=10000
-make build RADIO_FREQ_MHZ=2440 TX_INTERVAL_MS=20 TX_PACKET_COUNT=10000
-make build RADIO_FREQ_MHZ=2476 TX_INTERVAL_MS=50 TX_PACKET_COUNT=10000
-```
-
-Changes regenerate `build/experiment_config.h`, invalidate generated role objects/images,
-and rebuild both roles even without
-`make clean`. Decimal integers only: frequency 2360–2500 MHz, interval 1–60000 ms,
-packet count 0–4294967295. `TX_PACKET_COUNT=0` selects the previous continuous
-operation. Unsupported values fail before compilation. Keep separate builds
-sequential; concurrent builds of different configurations share `build/`.
-
-Outputs: `build/{tx,rx}.{elf,bin,uf2,map}` and `build/{tx,rx}.uf2.json` manifests.
-The manifest binds each UF2's hash to its role, embedded experiment configuration,
-and safe memory layout. Keep it
-beside the UF2 when using `flash.py`. Every generated image is checked against
-its ELF load segments, vector table, flash boundaries, and SRAM/stack limits.
+Configuration changes regenerate `build/experiment_config.h` and invalidate
+role objects/images, including on Make versions with coarse mtime resolution.
+Outputs remain `build/{tx,rx}.{elf,bin,uf2,map}` and `.uf2.json` manifests.
+Each image is checked against ELF/vector/flash/RAM limits; role, SHA-256 and
+embedded M2 configuration are verified again before flashing.
 
 ## Flash layout and boot
 
@@ -218,100 +242,25 @@ The runner keeps collecting RX evidence, records the warning,
 and never turns an unconfirmed copy into a successful-copy claim. Other copy
 errors abort. No copy is automatically retried or redirected to another board.
 
-## Monitor RX
-
-After RX application enumeration:
+## Monitor and architecture
 
 ```sh
 python3 scripts/monitor.py --list
-make monitor-rx PORT=/dev/cu.usbmodemYOUR_RX_PORT
-```
-
-Use the exact path printed by `--list`. With multiple serial devices present,
-identify RX by its USB product/serial in macOS System Information or by observing
-which port appears when RX is connected. The script never guesses. It sets raw
-mode, 115200 baud, and DTR/RTS using the Python standard library; baud is only CDC
-line coding, not the USB transfer speed. Stop with Ctrl-C. After disconnection,
-list ports and reopen it. This firmware does not implement a 1200-baud reset;
-double-press the physical reset button to return to UF2 mode.
-
-The banner appears when a terminal opens with DTR and includes `freq_mhz`,
-`tx_interval_ms`, `packet_target`, and `tx_power_dbm`. The interval and target
-are RX's compiled expectations, not measurements of TX. Each `RX` line retains
-the original counters and adds timing, duration, and observed gap statistics.
-
-To create a CSV while also displaying the diagnostics:
-
-```sh
 make monitor-rx PORT=/dev/cu.usbmodemYOUR_RX_PORT \
-  MONITOR_FLAGS='--csv experiment-2402-10-r1.csv --run-id 2402-10-r1'
+  MONITOR_FLAGS='--csv new-run.csv --run-id my-run'
 ```
 
-The CSV must be a new filename. The logger uses only Python's standard library,
-records UTC host timestamps and an explicit host run label, and buffers fragmented
-serial lines. Partial or malformed reports are excluded. It does not infer an
-on-air run identifier. Reset RX before each run, start the logger, then reset/start
-TX. Follow [the full controlled procedure](docs/experiments.md), including waiting
-for final stable counters. Opening a monitor does not reset firmware counters.
+Use the identified RX port; baud 115200 is CDC line coding, not throughput.
+The firmware never prints individual packets or waits for a terminal. M2's
+logger requires the complete M2 schema; old logs remain historical evidence.
+Reports contain configured values, RX validation/loss counters, hardware timing,
+USB overlap counters, and final TX telemetry. Definitions are in the experiment
+procedure, including the difference between packet delivery and observed gaps.
 
-`valid` includes duplicates and backwards packets. `crc_fail` and `payload_fail`
-do not advance sequence tracking. `gaps` counts missing sequence values between
-validated packets; do not add CRC failures to it. The first valid packet establishes
-the baseline, so preceding and trailing losses are not counted. `backwards`
-retains the original behavior of rebasing after backwards movement; such runs
-have `gap_rate_valid=0` and should be repeated. Sequence arithmetic handles uint32
-wrap; the original counters still wrap modulo 2^32. New observed-span accounting
-uses uint64. See the experiment document for the exact rate denominator.
-
-`radio_errors` retains the combined error/rearm-failure counter. `rearm_failures`
-is its overlapping subset, not another quantity to add. `radio_ready=1` means
-software has armed RX; a completed packet may already be waiting for polling.
-`usb_errors` still counts hardware/startup faults. `reports_skipped` counts lines
-not accepted by the USB FIFO. Firmware never waits for the terminal or prints
-individual packets. The TX FIFO is now 2048 bytes to fit one extended report;
-USB architecture and nonblocking write behavior are unchanged.
-
-## Driver and protocol details
-
-The driver uses a 4-byte-aligned static SRAM EasyDMA buffer. `PCNF0` contains no
-S0/LENGTH/S1 fields and uses the proprietary 8-bit preamble. `PCNF1` fixes both
-STATLEN and MAXLEN at 32, BALEN at 4 (five-byte logical address), little-endian
-bit ordering, and no whitening. Address zero uses `BASE0=0x89ABCDEF`,
-`PREFIX0=0xC3`, `TXADDRESS=0`, and `RXADDRESSES=1`. CRC is two bytes, polynomial
-`0x11021`, initial value `0xFFFF`, including the address. TX power is 0 dBm.
-These fields follow the [Nordic RADIO specification](https://docs.nordicsemi.com/r/bundle/ps_nrf52840/page/radio.html).
-
-Packet bytes 0–3 are a little-endian uint32 sequence. For every byte index `i`
-from 4 to 31:
-
-```text
-payload[i] = low8(0xA5 XOR (29*i) XOR (sequence >> (8*(i mod 4))))
-```
-
-TX increments sequence once per attempt, without acknowledgements or retries.
-`tx_attempts`, `tx_failures`, `tx_recovery_failures`, and `tx_complete` are volatile globals
-available through SWD. No camera, image, or frame buffer exists in this milestone.
-
-TIMER0 is a free-running 32-bit 1 MHz timebase (capture 0 in foreground,
-capture 1 in the USBD interrupt to prevent timestamp overwrite). Unsigned
-subtraction handles its roughly 71-minute wrap for all short deadlines. HFXO
-startup is verified with CLOCK task/event/status registers and a 100 ms timeout.
-RADIO ramp, completion, and disable waits have 2 ms bounds. A silent receiver
-remains armed indefinitely, servicing USB in the polling loop; a started but
-unfinished packet times out. Errors cause recovery attempts, not unbounded
-peripheral waits. Clock failure before USB startup records fault code 2 and
-halts for SWD diagnosis; no USB output is promised when its clock is unavailable.
-
-`READY_START` and `END_DISABLE` shortcuts control each packet. RX copies the
-finished payload after DMA stops and rearms before payload checks and USB work.
-There is a receive gap during turnaround. TIMER2/PPI now captures END, RXEN
-issuance, and READY to measure that gap, while a software capture marks CPU
-handling. No RADIO ISR, double buffering, DMA chaining, or retransmission was
-added. USB interrupts and foreground work can still delay polling; their elapsed
-times and END overlap counters are reported. Timing definitions and resource
-ownership are in [the experiment document](docs/experiments.md).
-
-Shared drivers live in `common/`, reset/memory/USB descriptors in `platform/`,
-and role loops in `tx/` and `rx/`. Future camera capture, larger packets,
-buffer ownership, scheduling, selective retransmission, and frame integrity can
-extend those interfaces. They are intentionally outside Milestone 1.
+Shared code remains under `common/`, boot and USB descriptors under `platform/`,
+and role loops under `tx/` and `rx/`. RX validates the completed DMA buffer in the
+RADIO ISR after starting the alternate buffer. TX prepares its next buffer while
+the current one is transmitting. RADIO stays in RXIDLE/TXIDLE between packets;
+it is disabled on recovery and at TX completion. TXIDLE can emit the configured
+DTX signal, so this benchmark trades continuous radio power/occupancy for speed.
+This is a USB-powered bench design, not a low-power duty-cycled link.

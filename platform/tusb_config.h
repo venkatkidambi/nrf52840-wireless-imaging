@@ -12,7 +12,7 @@
 #define CFG_TUD_MIDI 0
 #define CFG_TUD_VENDOR 0
 #define CFG_TUD_CDC_RX_BUFSIZE 64
-#define CFG_TUD_CDC_TX_BUFSIZE 2048
+#define CFG_TUD_CDC_TX_BUFSIZE 4096
 #define CFG_TUD_CDC_EP_BUFSIZE 64
 #define CFG_TUSB_MEM_ALIGN __attribute__((aligned(4)))
 #endif

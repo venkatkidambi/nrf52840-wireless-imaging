@@ -1,5 +1,6 @@
 #include "usb.h"
 #include "clock.h"
+#include "radio.h"
 #include "nrf.h"
 #include "tusb.h"
 #include <string.h>
@@ -10,13 +11,16 @@ static bool detected, ready, failed;
 static uint32_t detected_at;
 uint32_t usb_errors;
 volatile uint32_t usb_irq_max_us, usb_end_in_irq;
+volatile bool usb_irq_active;
 
 void USBD_IRQHandler(void)
 {
     uint32_t start = time_us();
-    bool ended = NRF_RADIO->EVENTS_END != 0;
+    uint32_t events = radio_rx_events;
+    usb_irq_active = true;
     tud_int_handler(0);
-    if (!ended && NRF_RADIO->EVENTS_END) ++usb_end_in_irq;
+    usb_irq_active = false;
+    usb_end_in_irq += radio_rx_events - events;
     uint32_t duration = time_us() - start;
     if (duration > usb_irq_max_us) usb_irq_max_us = duration;
 }

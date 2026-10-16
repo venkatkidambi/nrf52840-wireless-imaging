@@ -19,6 +19,11 @@ static inline uint32_t measurement_mean(const measurement_t *s)
 {
     return s->count ? (uint32_t)(s->sum / s->count) : 0;
 }
+/* Deadlines are at most 60 s away, well inside the signed half-wrap. */
+static inline bool measurement_deadline_safe(uint32_t now, uint32_t deadline)
+{
+    return (int32_t)(deadline - now) >= 8;
+}
 /* A complete sample must be ordered and shorter than one second. Modular
  * subtraction permits a timer wrap inside the sample. Debug halts invalidate it. */
 static inline bool measurement_spans(uint32_t end, uint32_t poll, uint32_t rxen,

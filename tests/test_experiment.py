@@ -16,7 +16,8 @@ import monitor
 class Configuration(unittest.TestCase):
     def test_defaults_and_supported_settings(self):
         self.assertEqual(configure.configuration({}), {
-            "RADIO_FREQ_MHZ": 2402, "TX_INTERVAL_MS": 10, "TX_PACKET_COUNT": 10000})
+            "RADIO_FREQ_MHZ": 2440, "TX_INTERVAL_MS": 10, "TX_INTERVAL_US": 10000,
+            "TX_PACKET_COUNT": 10000, "APP_PAYLOAD_SIZE": 32, "RUN_ID": 1})
         for freq in (2360, 2399, 2400, 2402, 2440, 2476, 2500):
             for interval in (1, 10, 20, 50, 60000):
                 with self.subTest(freq=freq, interval=interval):
@@ -26,7 +27,7 @@ class Configuration(unittest.TestCase):
 
     def test_invalid_settings(self):
         cases = {"RADIO_FREQ_MHZ": ("2359", "2501", "2402.5", "02402", "x", "2402;echo"),
-                 "TX_INTERVAL_MS": ("0", "-1", "60001", "10.0", "", "1e1"),
+                 "TX_INTERVAL_MS": ("0", "-1", "60001", "10.0", "1e1"),
                  "TX_PACKET_COUNT": ("-1", "4294967296", "0x100", "x")}
         for key, values in cases.items():
             for value in values:
@@ -128,7 +129,7 @@ class Logger(unittest.TestCase):
         self.assertIsNone(monitor.parse_report(report().strip() + " valid=99"))
         stream = io.StringIO()
         log = monitor.ExperimentLog(stream, "recovery")
-        log.feed(b"x" * 5000)
+        log.feed(b"x" * 9000)
         log.feed(report().encode()) # discard tail of overlong line
         log.feed(b"\xff\nRX valid=1\n" + report().encode() + b"RX valid=2")
         self.assertEqual(len(list(csv.DictReader(io.StringIO(stream.getvalue())))), 1)

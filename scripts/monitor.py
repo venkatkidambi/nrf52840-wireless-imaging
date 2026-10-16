@@ -19,12 +19,16 @@ packet_target rearm_failures have_sequence first observed_expected observed_gaps
 gap_rate_valid gap_rate_ppm uptime_ms observation_ms idle_ms timing_n
 rearm_min_us rearm_mean_us rearm_max_us poll_min_us poll_mean_us poll_max_us
 software_min_us software_mean_us software_max_us ramp_min_us ramp_mean_us ramp_max_us
-timing_rejected usb_work_max_us end_during_usb usb_irq_max_us usb_end_in_irq""".split()
+timing_rejected usb_work_max_us end_during_usb usb_irq_max_us usb_end_in_irq payload_bytes packet_bytes on_air_bytes tx_interval_us
+run_tag observation_us validation_max_us gaps_usb gaps_no_usb valid_usb valid_no_usb tx_stats_mask
+tx_attempts tx_starts tx_completions tx_missed tx_delay_min_us tx_delay_mean_us tx_delay_max_us
+tx_spacing_n tx_spacing_min_us tx_spacing_mean_us tx_spacing_max_us tx_turn_n
+tx_turn_min_us tx_turn_mean_us tx_turn_max_us tx_duration_us tx_failures tx_complete""".split()
 CSV_FIELDS = ["host_timestamp", "run_id", "receiver_session", *DIAGNOSTICS,
               "sequence_gap_percent"]
 
 def parse_report(line):
-    """Only complete M1.1 rows; never silently turn absent fields into zeros."""
+    """Only complete M2 rows; never silently turn absent fields into zeros."""
     if not line.startswith("RX "):
         return None
     values = {}
@@ -57,7 +61,7 @@ class ExperimentLog:
         self.pending += chunk
         while b"\n" in self.pending:
             raw, self.pending = self.pending.split(b"\n", 1)
-            if self.discarding or len(raw) > 4096:
+            if self.discarding or len(raw) > 8192:
                 self.discarding = False
                 continue
             try:
@@ -69,7 +73,7 @@ class ExperimentLog:
             if self.previous is not None and (
                     values["uptime_ms"] < self.previous["uptime_ms"] or
                     any(values[k] != self.previous[k] for k in
-                        ("freq_mhz", "tx_interval_ms", "packet_target"))):
+                        ("freq_mhz", "tx_interval_us", "payload_bytes", "run_tag", "packet_target"))):
                 self.session += 1
             self.previous = values.copy()
             values.update(host_timestamp=datetime.now(timezone.utc).isoformat(),
@@ -80,7 +84,7 @@ class ExperimentLog:
                     100 * values["observed_gaps"] / values["observed_expected"])
             self.writer.writerow(values)
             self.stream.flush()
-        if len(self.pending) > 4096:
+        if len(self.pending) > 8192:
             self.pending = b""
             self.discarding = True
 

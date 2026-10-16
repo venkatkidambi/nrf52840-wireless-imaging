@@ -5,10 +5,11 @@ CC := $(CROSS_COMPILE)gcc
 OBJCOPY := $(CROSS_COMPILE)objcopy
 SIZE := $(CROSS_COMPILE)size
 HOST_CC ?= cc
-RADIO_FREQ_MHZ ?= 2402
-TX_INTERVAL_MS ?= 10
+RADIO_FREQ_MHZ ?= 2440
 TX_PACKET_COUNT ?= 10000
-export RADIO_FREQ_MHZ TX_INTERVAL_MS TX_PACKET_COUNT
+APP_PAYLOAD_SIZE ?= 32
+RUN_ID ?= 1
+export RADIO_FREQ_MHZ TX_INTERVAL_MS TX_INTERVAL_US TX_PACKET_COUNT APP_PAYLOAD_SIZE RUN_ID
 NRFX := deps/nrfx-2.11.0
 CMSIS := deps/CMSIS_5-5.9.0
 TUSB := deps/tinyusb-0.17.0/src
@@ -79,10 +80,13 @@ monitor-rx:
 	$(PYTHON) scripts/monitor.py --port "$(PORT)" $(MONITOR_FLAGS)
 test:
 	@mkdir -p build
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon common/protocol.c tests/test_protocol.c -o build/test_protocol
-	./build/test_protocol
+	@for payload in 32 64 128 240 247; do \
+	  $(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon -DAPP_PAYLOAD_SIZE=$$payload common/protocol.c tests/test_protocol.c -o build/test_protocol && ./build/test_protocol || exit 1; \
+	done
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon tests/test_measure.c -o build/test_measure
 	./build/test_measure
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon common/clock.c tests/test_clock.c -o build/test_clock
+	./build/test_clock
 	$(PYTHON) -m unittest discover -s tests -v
 clean:
 	rm -rf build

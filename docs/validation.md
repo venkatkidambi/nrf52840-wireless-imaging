@@ -1,5 +1,119 @@
 # Validation results
 
+## RX enumeration failure and wakeup correction — 2026-10-16
+
+Operator run `experiments/2026-10-16_003021_324381-0400_2440MHz_32B_1000us_10000/`
+confirmed the complete RX UF2 copy, then timed out waiting for RX CDC enumeration.
+TX was never flashed. A subsequent read-only USB registry snapshot found only the
+identified TX bootloader attachment; RX was absent. Original run evidence is
+preserved.
+
+The initial M2 firmware could execute `WFI` before its first USB poll, relying on
+SysTick to wake the foreground. On nRF52, SysTick stops while the CPU sleeps
+([Nordic documentation](https://docs.nordicsemi.com/r/bundle/nrf5_sdk_v13.1.0/page/group_nrf_systick_hal.html)).
+With TX still in bootloader mode and USB startup not yet polled, RX could remain
+asleep. The same wakeup choice also undermined the TX radio-wait timeout.
+
+Both roles now start a peripheral TIMER1 1-ms compare/clear interrupt at priority
+7 in `time_init()`, before sleeping. Its vector is explicitly installed; TX stops
+this wakeup source after completion. RADIO remains at priority 1 and USB at 6.
+TIMER0 measurement and TIMER3/PPI radio scheduling retain their existing roles.
+
+The corrected pair built for 2440 MHz / 32 application bytes / 1000 us / 10000
+packets / run tag 2604119099, passing ELF and UF2 safety checks. TX uses **4320
+flash bytes / 428 static RAM bytes**; RX uses **17420 flash bytes / 9668 static RAM
+bytes**. Each reserves an additional 8192-byte stack. These artifacts supersede
+the initial M2 artifact sizes below; the matrix was not rebuilt for this fix.
+
+`make test` passed **69 Python tests**, native protocol checks at all five payload
+sizes, native timing checks, and a new test compiling the actual clock driver
+against a register model. That model checks periodic peripheral wakeup without
+CPU/SysTick, USB or RADIO activity, interrupt acknowledgement, and shutdown. New
+ELF checks verify the linked TIMER1 and RADIO vectors in both images. This is
+software validation, not a physical sleep/clock measurement. `git diff --check`
+also passed. No firmware was flashed and no live serial port was opened during
+this investigation. Enumeration and RF behavior after this correction still
+require an operator retry.
+
+## Milestone 2 — 2026-10-16 (software validation only)
+
+Implemented the shared interrupt-driven RADIO path, two aligned DMA slots per
+role, fixed application payload configuration, TIMER3/PPI scheduling, run tags,
+post-run TX telemetry, extended USB reports and matrix/summary tooling. No board
+was flashed, no live serial device was opened, and no RF performance was measured.
+Historical hardware observations below belong to earlier firmware.
+
+`make test` passed **68 Python tests**, the native protocol test at **32, 64,
+128, 240 and 247 application bytes**, and the native timing test. Coverage includes
+all single-bit data corruptions, independent golden bytes, DMA canaries, run tags,
+reserved sequences, gaps/duplicates/restarts, telemetry pages and conflicting
+pages, timer wrap/deadline guard arithmetic, all 24 matrix admission decisions in
+both Python and C, missing telemetry, header-excluded goodput, lost-tail completion,
+CSV schema/capacity, firmware pairing, existing flash safety and interruption cleanup.
+The original safety cases remain enabled; no physical-flash test was substituted.
+
+Both TX and RX built for all **10 admitted matrix combinations**; the other **14
+were rejected**. These are admission/build outcomes, not successful RF experiments.
+The 32-byte / 200-us request, for example, fails the chosen handoff budget even
+though raw airtime is only 192 us. Build logs and machine-readable admission,
+configuration, hash and size records are in `build/m2-matrix-final/` locally.
+
+| Application bytes | Interval us (0=max) | TX flash bytes | RX flash bytes | TX static RAM bytes | RX static RAM bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 1000 | 4196 | 17356 | 428 | 9668 |
+| 32 | 500 | 4196 | 17356 | 428 | 9668 |
+| 32 | 250 | 4196 | 17356 | 428 | 9668 |
+| 32 | 0 | 4048 | 17356 | 428 | 9668 |
+| 64 | 1000 | 4204 | 17356 | 556 | 9732 |
+| 64 | 500 | 4204 | 17356 | 556 | 9732 |
+| 64 | 0 | 4056 | 17356 | 556 | 9732 |
+| 128 | 1000 | 4200 | 17356 | 812 | 9860 |
+| 128 | 0 | 4052 | 17356 | 812 | 9860 |
+| 240 | 0 | 4052 | 17356 | 1260 | 10084 |
+
+Additional paired builds passed at 247 bytes/max (TX 4040 flash / 1292 static RAM;
+RX 17356 flash / 10100 static RAM), 240 bytes/1200 us, and the legacy
+`TX_PACKET_COUNT=0` branch. The final local artifacts are **2440 MHz / 32 bytes /
+1000 us / 10000 packets / run tag 1**: TX **4196 flash / 428 static RAM**, RX
+**17356 flash / 9668 static RAM**. Both reserve a separate 8192-byte stack.
+`build/m2-audit.json` records these extra builds, hashes, DMA addresses and sizes.
+
+Every built pair passed the existing ELF load/vector/flash/RAM checks and
+UF2/hash/role checks. Flash remains `[0x27000,0xEA000)`, SRAM starts at 0x20008000,
+and the top 8 KiB remains reserved for stack. The linker and flash safety scripts
+were not changed. Symbol inspection of the extra builds found no unresolved or
+heap-allocation entry points and no `nrf_nvmc_write_word`. The DMA symbol audit
+confirmed four-byte alignment, static SRAM placement below the stack, and correct
+array strides: 80 bytes for two 40-byte slots, 496 bytes for two 248-byte slots,
+and 512 bytes for two padded 255-byte slots. No HM01B0/camera access was introduced.
+Stack capacity is a link-time reservation, not a measured runtime high-water mark.
+
+Python syntax checks, shell syntax checks and `git diff --check` passed.
+No hardware tool, mount discovery or serial access is needed for these checks:
+
+```sh
+make test
+python3 scripts/benchmark_matrix.py --build --output build/m2-matrix-recheck
+make build APP_PAYLOAD_SIZE=247 TX_INTERVAL_US=0
+make build APP_PAYLOAD_SIZE=32 TX_INTERVAL_US=1000 TX_PACKET_COUNT=10000
+```
+
+The register design was checked against Nordic's RADIO packet/state-machine
+specification, linked in [the experiment rationale](experiments.md#state-machine-and-ownership-rationale).
+Host compilation cannot validate PPI propagation, END-to-START radio readiness,
+CRC handoff timing, oscillator accuracy, RF loss, or USB load effects. Required
+hardware work is: run the first 32-byte/1000-us experiment, verify complete final
+TX telemetry and clean diagnostics, measure turnaround/spacing at decreasing
+intervals, then run/repeat the payload matrix including maximum mode. Exercise
+USB backpressure/disconnect and receiver recovery, inspect USB overlap buckets,
+and independently confirm event-to-air timing before treating the numbers as RF
+latency. The 20-us admission budget and 8-us compare-programming guard are
+unverified engineering allowances; missed deadlines remain visible.
+
+No measured throughput improvement, sustained maximum, image-transfer latency,
+or 450–600 ms target achievement is claimed. See the measurement definitions for
+why a receiver-only time span or a payload-only airtime calculation is insufficient.
+
 ## Operator run at 23:54 on 2026-10-15 — recovered RX evidence
 
 Run directory: `experiments/2026-10-15_235426_344758-0400_2440MHz_10ms_10000/`.

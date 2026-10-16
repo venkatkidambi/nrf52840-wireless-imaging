@@ -9,19 +9,21 @@ import json
 import os
 from pathlib import Path
 import signal
+import secrets
 import subprocess
 import sys
 import time
 
 import configure
+from benchmark_metrics import metrics, telemetry_consistent
 import firmware
 import monitor
 import usb_identity as usb
 
 ROOT = Path(__file__).resolve().parents[1]
-SETTINGS = ("freq_mhz", "tx_interval_ms", "packet_target", "tx_power_dbm")
+SETTINGS = (*configure.FIELDS.values(), "tx_power_dbm")
 ACTIVITY = ("valid", "crc_fail", "payload_fail", "last", "gaps", "timing_n",
-            "duplicates", "backwards", "radio_errors", "rearm_failures")
+            "duplicates", "backwards", "radio_errors", "rearm_failures", "tx_stats_mask")
 
 class RunError(Exception):
     pass
@@ -32,18 +34,32 @@ def require(condition, message):
 
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("frequency", nargs="?", default="2402", help="MHz, 2360–2500 (default: 2402)")
-    parser.add_argument("interval", nargs="?", default="10", help="TX interval in ms, 1–60000 (default: 10)")
-    parser.add_argument("count", nargs="?", default="10000", help="Bounded packet attempts, 1–4294967295 (default: 10000)")
+    parser.add_argument("frequency", nargs="?", help="Legacy frequency MHz")
+    parser.add_argument("interval", nargs="?", help="Legacy interval in milliseconds")
+    parser.add_argument("count", nargs="?", help="Legacy bounded packet count")
+    parser.add_argument("--frequency", dest="frequency_option")
+    parser.add_argument("--payload", default="32", help="Application bytes, 32..247")
+    schedule = parser.add_mutually_exclusive_group()
+    schedule.add_argument("--interval-us", help="START interval in microseconds")
+    schedule.add_argument("--max-throughput", action="store_true")
+    parser.add_argument("--packets")
     args = parser.parse_args(argv)
     try:
-        config = configure.configuration(dict(zip(configure.SETTINGS,
-                              (args.frequency, args.interval, args.count))))
+        if args.frequency and args.frequency_option or args.count and args.packets:
+            raise ValueError("Do not mix positional and named values for the same setting")
+        if args.interval and (args.interval_us is not None or args.max_throughput):
+            raise ValueError("Do not mix legacy milliseconds with microsecond/max scheduling")
+        env = {"RADIO_FREQ_MHZ": args.frequency_option or args.frequency or "2440",
+               "APP_PAYLOAD_SIZE": args.payload, "TX_PACKET_COUNT": args.packets or args.count or "10000"}
+        if args.interval: env["TX_INTERVAL_MS"] = args.interval
+        if args.interval_us is not None: env["TX_INTERVAL_US"] = args.interval_us
+        if args.max_throughput: env["TX_INTERVAL_US"] = "0"
+        config = configure.configuration(env)
         if config["TX_PACKET_COUNT"] == 0:
             raise ValueError("Experiment runner requires a bounded packet count greater than zero")
     except ValueError as exc:
         parser.error(str(exc))
-    return dict(zip(SETTINGS, (*config.values(), 0)))
+    return configure.metadata(config)
 
 def write_json(path, data):
     temp = path.with_suffix(path.suffix + ".tmp")
@@ -139,11 +155,18 @@ def check_report(row, config, previous=None, clean=False):
                 "RX counters reset during experiment")
     require(not row["backwards"] and not row["duplicates"], "Unexpected duplicate/backwards sequences; run identity is uncertain")
     if clean:
-        require(not any(row[k] for k in ("valid", "crc_fail", "payload_fail", "have_sequence", "timing_n")),
+        require(not any(row[k] for k in ("valid", "crc_fail", "payload_fail", "have_sequence", "timing_n", "tx_stats_mask")),
                 "RX already received packets before TX flashing; reset and isolate previous transmitters")
         require(not any(row[k] for k in ("radio_errors", "rearm_failures", "usb_errors")),
                 "RX startup diagnostics report errors")
-    elif row["have_sequence"]:
+    if row["tx_stats_mask"] == 7:
+        require(0 <= row["tx_completions"] <= row["tx_starts"] <= row["tx_attempts"] <= config["packet_target"],
+                "Inconsistent TX telemetry counters")
+        require(row["valid"] - row["duplicates"] <= row["tx_starts"], "RX count exceeds measured TX starts")
+        if row["tx_complete"]:
+            require(row["tx_completions"] == config["packet_target"] and not row["tx_failures"]
+                    and row["tx_duration_us"] > 0, "Inconsistent TX completion telemetry")
+    if not clean and row["have_sequence"]:
         require(row["first"] <= row["last"] < config["packet_target"], "Sequence outside configured bounded run")
 
 class Capture:
@@ -200,8 +223,9 @@ class Capture:
 class Completion:
     def __init__(self, config, start):
         self.config, self.start = config, start
-        self.nominal = config["packet_target"] * config["tx_interval_ms"] / 1000
-        self.idle_seconds = max(3, 3 * config["tx_interval_ms"] / 1000)
+        self.nominal = config["packet_target"] * (config["tx_interval_us"] or
+            configure.minimum_interval(config["payload_bytes"])) / 1000000
+        self.idle_seconds = max(3, 3 * config["tx_interval_us"] / 1000000)
         self.deadline = start + self.nominal * 1.25 + self.idle_seconds + 30
         self.previous = None
         self.stable = 0
@@ -212,6 +236,11 @@ class Completion:
         self.stable = self.stable + 1 if unchanged else 1
         self.previous = row
         quiet = self.stable >= 3 and row["idle_ms"] >= self.idle_seconds * 1000
+        if row["tx_stats_mask"] == 7 and self.stable >= 3:
+            if row["tx_complete"] and (quiet or not row["have_sequence"]):
+                return "complete_reported"
+            if not row["tx_complete"]:
+                return "tx_failed"
         if row["have_sequence"] and quiet:
             if row["last"] == self.config["packet_target"] - 1:
                 return "complete_observed"
@@ -254,7 +283,10 @@ class Runner:
 
     def build(self):
         print("Building and validating matching TX/RX firmware...", flush=True)
-        settings = [f"{name}={self.config[key]}" for name, key in zip(configure.SETTINGS, SETTINGS)]
+        settings = [f"{name}={self.config[key]}" for name, key in configure.FIELDS.items()
+                    if name != "TX_INTERVAL_MS"]
+        # Override legacy environment settings so sub-ms builds are unambiguous.
+        settings.append("TX_INTERVAL_MS=")
         self.command(["make", "build", *settings], timeout=600)
         manifests = {}
         for role in ("rx", "tx"):
@@ -350,7 +382,7 @@ class Runner:
         write_json(self.folder / "config.json", metadata)
         print("Collecting RX evidence...", flush=True)
         self.collection_status = self.collect(start)
-        if self.collection_status == "complete_observed" and "unconfirmed" in self.copy_status.values():
+        if self.collection_status in ("complete_observed", "complete_reported") and "unconfirmed" in self.copy_status.values():
             return "copy_unconfirmed"
         return self.collection_status
 
@@ -363,23 +395,33 @@ class Runner:
         summary = {"status": status, "error": error, "final_diagnostics": self.last,
                    "copy_status": self.copy_status, "collection_status": self.collection_status,
                    "observed_sequence_gap_percent": rate,
-                   "tx_completion_independently_verified": False,
+                   "tx_completion_independently_verified": telemetry_consistent(self.config, row) and bool(row.get("tx_complete")),
+                   "metrics": metrics(self.config, row),
                    "finished_at": datetime.now(timezone.utc).isoformat(),
                    "completion_basis": {
+                       "complete_reported": "Complete matching TX telemetry and stable RX counters; includes measured TX starts and duration",
+                       "tx_failed": "TX telemetry reports an aborted run",
                        "complete_observed": "Final target sequence observed; at least three stable reports and idle margin",
                        "incomplete_tail": "Nominal duration plus margin elapsed with stable idle RX; final TX sequence unobserved",
                        "timed_out": "Hard collection deadline elapsed without completion evidence",
-                       "copy_unconfirmed": "Final sequence and stable idle observed, but host could not confirm UF2 final write/sync/close",
+                       "copy_unconfirmed": "RF completion evidence received, but host could not confirm UF2 final write/sync/close",
                    }.get(status, error)}
         write_json(self.folder / "summary.json", summary)
-        titles = {"complete_observed": "Experiment complete (final sequence observed)",
+        flat = {"status": status, **summary["metrics"]}
+        with (self.folder / "summary.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(flat))
+            writer.writeheader()
+            writer.writerow(flat)
+        titles = {"complete_reported": "Experiment complete (TX telemetry received)",
+                  "tx_failed": "Experiment incomplete (TX reported failure)",
+                  "complete_observed": "Experiment complete (final sequence observed)",
                   "incomplete_tail": "Experiment collection ended — INCOMPLETE: final sequence unobserved",
                   "timed_out": "Experiment TIMED OUT", "failed": "Experiment FAILED",
                   "interrupted": "Experiment INTERRUPTED"}
-        titles["copy_unconfirmed"] = "Experiment collected — UF2 COPY UNCONFIRMED (final sequence observed)"
+        titles["copy_unconfirmed"] = "Experiment collected — UF2 COPY UNCONFIRMED (RF completion evidence received)"
         print(titles[status])
         for label, value in (("Frequency", f"{self.config['freq_mhz']} MHz"),
-                             ("TX interval", f"{self.config['tx_interval_ms']} ms"),
+                             ("TX interval", f"{self.config['tx_interval_us']} us (0=max)"),
                              ("Target packets", self.config["packet_target"]),
                              ("Valid packets", row.get("valid", "n/a")),
                              ("Sequence gaps", row.get("observed_gaps", "n/a")),
@@ -389,6 +431,12 @@ class Runner:
                              ("RX rearm mean", f"{row['rearm_mean_us']} us" if row.get("timing_n") else "n/a"),
                              ("RX rearm max", f"{row['rearm_max_us']} us" if row.get("timing_n") else "n/a")):
             print(f"{label + ':':22} {value}")
+        measured = summary["metrics"]
+        if measured["application_mbps"] is not None:
+            print(f"Application goodput:   {measured['application_mbps']:.6f} Mbps")
+            print(f"Packet delivery:       {100 * measured['packet_delivery_ratio']:.3f}%")
+        else:
+            print("Application goodput:   unavailable (missing TX telemetry or invalid sequence history)")
         if error:
             print(error, file=sys.stderr)
         if "unconfirmed" in self.copy_status.values():
@@ -400,6 +448,7 @@ def interrupted(signum, frame):
 
 def main(argv=None):
     config = arguments(argv)
+    config["run_tag"] = secrets.randbits(32)
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGHUP, interrupted)
     experiments = ROOT / "experiments"
@@ -411,7 +460,7 @@ def main(argv=None):
             print("Another experiment runner is active", file=sys.stderr)
             return 1
         name = datetime.now().astimezone().strftime("%Y-%m-%d_%H%M%S_%f%z")
-        folder = experiments / f"{name}_{config['freq_mhz']}MHz_{config['tx_interval_ms']}ms_{config['packet_target']}"
+        folder = experiments / f"{name}_{config['freq_mhz']}MHz_{config['payload_bytes']}B_{config['tx_interval_us']}us_{config['packet_target']}"
         folder.mkdir()
         write_json(folder / "config.json", {**config, "timestamp": datetime.now(timezone.utc).isoformat()})
         runner = Runner(config, folder)
@@ -427,7 +476,7 @@ def main(argv=None):
             for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 signal.signal(sig, signal.SIG_IGN)
             runner.finish(status, error)
-        return {"complete_observed": 0, "incomplete_tail": 2, "timed_out": 2, "copy_unconfirmed": 2,
+        return {"complete_reported": 0, "tx_failed": 2, "complete_observed": 0, "incomplete_tail": 2, "timed_out": 2, "copy_unconfirmed": 2,
                 "interrupted": 130, "failed": 1}[status]
 
 if __name__ == "__main__":

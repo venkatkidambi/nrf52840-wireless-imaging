@@ -5,18 +5,44 @@ from pathlib import Path
 import re
 import sys
 
-SETTINGS = {"RADIO_FREQ_MHZ": (2402, 2360, 2500),
-            "TX_INTERVAL_MS": (10, 1, 60000),
-            "TX_PACKET_COUNT": (10000, 0, 0xffffffff)}
+SETTINGS = {"RADIO_FREQ_MHZ": (2440, 2360, 2500),
+            "TX_PACKET_COUNT": (10000, 0, 0xfffffff0),
+            "APP_PAYLOAD_SIZE": (32, 32, 247),
+            "RUN_ID": (1, 0, 0xffffffff)}
+FIELDS = {"RADIO_FREQ_MHZ": "freq_mhz", "TX_INTERVAL_MS": "tx_interval_ms",
+          "TX_PACKET_COUNT": "packet_target", "APP_PAYLOAD_SIZE": "payload_bytes",
+          "TX_INTERVAL_US": "tx_interval_us", "RUN_ID": "run_tag"}
+
+def integer(name, value, low, high):
+    if not re.fullmatch(r"0|[1-9][0-9]*", value) or not low <= int(value) <= high:
+        raise ValueError(f"{name} must be a decimal integer in [{low}, {high}]")
+    return int(value)
+
+def minimum_interval(payload):
+    return (payload + 16) * 4 + 20
 
 def configuration(environ):
-    values = {}
-    for name, (default, low, high) in SETTINGS.items():
-        value = environ.get(name, str(default))
-        if not re.fullmatch(r"0|[1-9][0-9]*", value) or not low <= int(value) <= high:
-            raise ValueError(f"{name} must be a decimal integer in [{low}, {high}]")
-        values[name] = int(value)
+    values = {name: integer(name, environ.get(name, str(default)), low, high)
+              for name, (default, low, high) in SETTINGS.items()}
+    # Make exports unset optional variables as empty strings.
+    ms, us = environ.get("TX_INTERVAL_MS"), environ.get("TX_INTERVAL_US")
+    if ms:
+        ms = integer("TX_INTERVAL_MS", ms, 1, 60000)
+    if us:
+        us = integer("TX_INTERVAL_US", us, 0, 60000000)
+        if ms and us != ms * 1000:
+            raise ValueError("Conflicting TX_INTERVAL_MS and TX_INTERVAL_US")
+    else:
+        us = (ms or 10) * 1000
+    minimum = minimum_interval(values["APP_PAYLOAD_SIZE"])
+    if us and us < minimum:
+        raise ValueError(f"TX_INTERVAL_US={us} infeasible: minimum {minimum} us "
+                         "(packet airtime + 20 us handoff budget), or 0 for max mode")
+    values.update(TX_INTERVAL_US=us, TX_INTERVAL_MS=us // 1000)
     return values
+
+def metadata(values):
+    return {**{field: values[name] for name, field in FIELDS.items()}, "tx_power_dbm": 0}
 
 def write_config(path, environ, invalidate=False):
     values = configuration(environ)

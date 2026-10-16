@@ -1,3 +1,239 @@
+# Milestone 2 experiment procedure
+
+This section describes current firmware. The M1 procedure is retained below as
+historical context and does not describe the M2 packet format or timing paths.
+No M2 RF measurements were performed during implementation.
+
+## Baseline and objective
+
+The supplied three 10,000-packet, 10 ms, 0 dBm measurements were:
+
+| MHz | Valid | Missing | CRC failures |
+| ---: | ---: | ---: | ---: |
+| 2402 | 9580 | 420 | 149 |
+| 2440 | 9875 | 125 | 100 |
+| 2476 | 9864 | 136 | 66 |
+
+All had zero payload/radio/USB/rearming failures, roughly 137 us mean rearm and
+124 us ramp. M1 used 32 total DMA bytes (including its four-byte sequence);
+M2 application-byte accounting excludes its eight-byte header. These are single
+runs, not established channel rankings. M2 defaults
+to 2440 MHz and seeks sustainable delivered application goodput using synthetic data.
+
+## Wire format and verification
+
+A fixed packet has little-endian `sequence:u32`, `run_tag:u32`, then
+`APP_PAYLOAD_SIZE` data bytes. For each absolute DMA byte index i >= 8:
+
+```text
+byte[i] = low8(0xA5 XOR (29*i) XOR (sequence >> (8*(i mod 4))))
+```
+
+RX checks the tag, hardware CRC, every data byte and sequence progression.
+The sequence is incremented for each TX submission; failures abort the benchmark
+and are reported where telemetry remains possible. There are no ACKs or retries.
+Data sequence values stop below 0xfffffff0; no benchmark wraps its sequence.
+The runner chooses a random tag for each run. This is stale-run detection, not
+authentication; isolate unrelated transmitters and reset RX between runs.
+
+PCNF0 has LFLEN=S0LEN=S1LEN=0 and an eight-bit preamble. PCNF1 uses fixed
+STATLEN=MAXLEN=payload+8, BALEN=4, little endian, no whitening. Address zero,
+BASE0=0x89abcdef, PREFIX0=0xc3, CRC polynomial 0x11021, initialization 0xffff,
+CRC length two including address, and 0 dBm are preserved. With no length byte,
+DMA size is payload+8, on-air size payload+16, airtime 4*(payload+16) us.
+The eight-bit STATLEN/MAXLEN fields permit at most 247 application bytes.
+
+Final TX results occupy three separately CRC-protected packets, sent **once each**
+at 10 ms spacing after data transmission. Sequences 0xfffffff0..0xfffffff2 identify
+pages. Each page carries eight little-endian u32 words in its first 32 application
+positions; remaining bytes retain the deterministic pattern. Fields are defined
+by `common/protocol.h`; words 19..23 are reserved zero. These packets are excluded
+from application counts, spacing and TX duration. `tx_stats_mask=7` means all
+pages arrived; partial values in USB rows must not be used as complete TX evidence.
+A lost page makes the run's TX-based throughput unavailable. Repeat the experiment;
+the firmware does not retransmit the page. CRC failures cannot reliably be classified
+as data or telemetry because the corrupt header is untrusted, so `crc_fail` includes
+both phases. Never add CRC failures to sequence gaps.
+
+## State-machine and ownership rationale
+
+The [Nordic RADIO specification](https://docs.nordicsemi.com/r/bundle/ps_nrf52840/page/radio.html)
+supports multiple packets without disable/re-enable. READY completes ramp-up;
+START begins from RXIDLE/TXIDLE. In proprietary 2 Mbps mode, END marks packet
+completion and returns to idle; CRC status is then available. DISABLED acknowledges
+DISABLE. PHYEND is a distinct physical-layer event needed for other modes such as
+coded BLE/802.15.4; this driver does not use those modes or substitute PHYEND for END.
+PACKETPTR is latched for START; DMA buffers must remain in data RAM.
+
+Initial enable uses fast ramp-up, waits for READY with a 2 ms bound, then STARTs
+through EGU/PPI. No repeated RXEN/TXEN occurs during the data run. The old
+READY_START + END_DISABLE path and possible DISABLED_RXEN chaining still incur
+repeated ramp-up. END_START can be used in this PHY, but it cannot enforce our
+CPU buffer ownership if the ISR is delayed. We intentionally use a bounded
+software handoff before START instead of an unconditional END_START shortcut.
+
+RX owns two separately four-byte-aligned, padded static DMA slots. At END, the
+priority-1 ISR snapshots CRC and END time, clears packet events, selects the other
+slot and starts it through PPI. It then verifies the completed slot in place,
+without a copy or deferred pointer. If the next packet finishes while validation
+is running, it waits in RXIDLE. The same IRQ cannot preempt itself, and only that
+IRQ swaps buffers: software can never receive a slot that DMA is overwriting.
+A late handler can lose subsequent air packets, but cannot silently overwrite
+unprocessed data. Sequence gaps and END-to-handler latency reveal this cost.
+
+TX owns two padded aligned slots. It submits one immutable slot, prepares the
+other during transmission and sleeps until END. Only then does it swap. The next
+fixed deadline is prior actual START-task time plus requested interval; TIMER3
+COMPARE4/PPI starts from TXIDLE. An eight-microsecond programming guard rebases a
+late/too-close deadline into the future and increments `tx_missed`. There are no
+catch-up bursts. Max mode STARTs once END handling and the next buffer are ready.
+TXIDLE emits DTX between packets, so this experiment keeps the transmitter active
+rather than duty cycling. Disable happens after final telemetry or on failure.
+
+TIMER3 and PPI capture START task issuance, ADDRESS and END at 1 MHz. ADDRESS
+confirms transmission progressed onto the air; an attempted schedule alone is not
+counted as a confirmed start. RX watchdog checks ADDRESS-to-now against 2 ms;
+silence without ADDRESS is normal. Clock/ramp/disable timeouts remain bounded.
+TX's wait bound includes the scheduled delay plus 3 ms; a fault aborts instead of
+silently continuing with bad timing. Both roles use a 1 ms TIMER1 compare interrupt solely to wake
+sleeping foreground watchdog/USB work, not for scheduling radio packets. SysTick
+is not a sleep wakeup source on nRF52840: its CPU clock stops in WFI/WFE.
+The original M2 revision incorrectly used it and could sleep before USB startup.
+TIMER1 runs from peripheral HFCLK independently of the sleeping CPU; its event is
+acknowledged in the ISR. See [Nordic's SysTick restriction](https://docs.nordicsemi.com/r/bundle/nrf5_sdk_v13.1.0/page/group_nrf_systick_hal.html)
+and [TIMER clocking](https://docs.nordicsemi.com/r/bundle/ps_nrf52840/page/timer.html).
+
+| Resource | Owner / purpose |
+| --- | --- |
+| TIMER0 CC0/1/2 | Foreground / non-RADIO ISR / RADIO ISR system-time captures |
+| TIMER3 CC0/1/2/3/4 | END / ADDRESS / software-now / START / deadline |
+| PPI 0/1 | END / ADDRESS to TIMER3 capture |
+| PPI 2 + fork | EGU0 event0 to START and START timestamp |
+| PPI 3 + fork | COMPARE4 to START and START timestamp |
+| PPI 4, group0 | Same compare disables scheduling channels 3/4 as a one-shot |
+| EGU0 event0 | Immediate START, used by RX and max TX |
+| RADIO IRQ priority 1 | DMA handoff and validation/completion |
+| USBD IRQ priority 6 | Existing TinyUSB interrupt service |
+| TIMER1 CC0 / IRQ priority 7 | 1 MHz, compare 1000 + CLEAR shortcut; watchdog/foreground wakeup |
+
+## Timing and metric definitions
+
+All min/mean/max means are integer microseconds (truncated); samples have 1 us
+resolution plus peripheral/PPI latency. Hardware validation must confirm capture
+ordering and the relationship between task/event markers and actual RF activity.
+
+- `rearm_*`: RX END to next START task, including handler latency and pointer
+  handoff. This differs from M1 END-to-READY. `poll_*` is now END-to-ISR-entry;
+  `software_*` is ISR-entry-to-START. Legacy `ramp_*` is zero because steady-state
+  RX does not ramp up; it is not a measured zero initial ramp. Timing includes
+  CRC-failed and telemetry packets. `validation_max_us` bounds observed data-check
+  work after RX restarts. No claimed speedup is based merely on compiling this path.
+- `tx_attempts`: data submissions. `tx_starts`: ADDRESS-confirmed transmissions,
+  including an addressed timeout if one occurs. `tx_completions`: successful ENDs.
+  `tx_missed`: fixed deadlines that could not safely be armed. `tx_delay_*` measures
+  nonnegative START-task lateness relative to the requested deadline.
+- `tx_spacing_*`: consecutive TX ADDRESS timestamps; the constant header offset
+  cancels, giving observed packet spacing. `tx_turn_*`: previous END to next START
+  task, including programmed idle time in fixed mode. All exclude telemetry.
+- `tx_duration_us`: sum of data END-to-END spans plus first ADDRESS-to-END and
+  24 us for the fixed six-byte preamble/address. Thus it is an event-based estimate
+  of first preamble through final data END, not host flash time. The nominal prefix
+  correction needs RF/logic-analyzer confirmation. For a failed run it covers only
+  completed packets; the summary suppresses application goodput for such runs.
+- `observation_us`: first to last valid RX END, using a software-extended capture
+  clock, including long idle gaps and 32-bit timer wrap. It is zero with one packet.
+  Neither it nor TX duration includes camera capture, USB transfer or UF2 reboot.
+- Main goodput = unique valid RX packets * application bytes / measured TX duration.
+  Headers, CRC and final telemetry contribute no application bytes. Missing leading
+  and trailing data still reduce the numerator. The summary requires complete TX
+  telemetry and a completed, consistent run; otherwise it emits JSON null / CSV blank.
+- Packet delivery ratio = unique valid RX packets / confirmed TX starts. Configured
+  packet target is never substituted for measured starts. `observed_gaps` covers
+  only first-to-last validated sequence; leading and trailing losses are absent.
+- RX-only rate = (unique valid packets - 1) * payload / observation time. Subtracting
+  the first packet avoids attributing its bytes to a span that starts after it ended.
+  This is explicitly a different observation-window rate, not full-run goodput.
+- `projected_102400_byte_seconds` = 102400 / goodput, only a rate projection. No
+  complete frame reconstruction, end-to-end latency, or guaranteed image delivery
+  is measured by this unacknowledged synthetic stream. The payload-only 409.6 ms
+  lower bound excludes all overhead and loss.
+
+TX intervals are bounded to 60 seconds, below the signed timer half-wrap. TX
+extends elapsed duration by summing successive bounded END intervals. RX samples
+its extended clock in foreground and IRQ, including during silence. A debugger
+halt or CPU stall longer than a timer wrap invalidates timing. Measurement sample
+counts saturate; existing protocol/USB error counters remain uint32 and very long
+or heavily interfered runs should be bounded before those counters wrap.
+
+## USB coexistence
+
+RADIO preempts USBD and foreground USB work. USB polling is throttled to once per
+millisecond, reports to once per second. No formatting, division or USB writes
+occur in RADIO's IRQ. A short interrupt-masked snapshot copies counters for each
+report; formatting occurs after unmasking. DMA may complete during that snapshot,
+then the pending RADIO IRQ restarts reception. This delay is included in rearm data.
+The CDC FIFO and report buffer are 4096 bytes; writes remain nonblocking.
+
+`end_during_usb` and `usb_end_in_irq` count RADIO handlers that preempt foreground
+USB/report work and USBD IRQ respectively, using an event counter rather than an
+END latch that RADIO clears. `usb_work_max_us` / `usb_irq_max_us` include preemption.
+`gaps_usb` / `gaps_no_usb` attribute a sequence gap according to whether the next
+valid packet's callback interrupted USB work; `valid_usb` / `valid_no_usb` provide
+corresponding exposure counts. Compare gaps/(gaps+valid) between buckets and across
+repeated runs. This is correlation at the following packet, not proof that USB
+caused the loss. Fully missed radio packets have no interrupt to timestamp.
+
+## Admission, matrix and physical validation
+
+The [README table](../README.md#packet-sizes-and-scheduling) lists size/timing limits.
+Admission uses packet airtime plus a 20 us software handoff budget. It rules out
+impossible requests, but cannot certify CPU/radio/USB performance. Compare measured
+spacing and missed deadlines with the request. Max mode carries no fixed-rate claim.
+
+```sh
+make test
+python3 scripts/benchmark_matrix.py --build --output build/m2-matrix-new
+./scripts/run_experiment.sh --frequency 2440 --payload 32 --interval-us 1000 --packets 10000
+./scripts/run_experiment.sh --frequency 2440 --payload 240 --interval-us 1200 --packets 10000
+./scripts/run_experiment.sh --frequency 2440 --payload 240 --max-throughput --packets 10000
+```
+
+Before each physical run, double-reset both boards, keep orientation/distance,
+USB ports, power and surrounding RF conditions fixed, and close other serial
+monitors. The runner retains the existing identity checks, RX-first flashing,
+CDC readiness, frozen-image pairing, copy uncertainty and interruption cleanup.
+M2 extends readiness to payload, microsecond interval and random run tag.
+Never manually copy an ambiguously targeted UF2 or alter flash reservations.
+
+`complete_reported` means matching complete TX telemetry and stable RX counters;
+loss of the final data sequence does not prevent this outcome. `complete_observed`
+retains the old final-sequence/idle evidence when TX telemetry is missing; it does
+not provide TX-based goodput. `tx_failed` records an aborted TX run. Both successful
+collection statuses exit 0, while incomplete tail/timeout/TX failure and an
+unconfirmed UF2 copy exit 2. Copy uncertainty always remains separate from RF
+results. Inspect the metric completeness fields before accepting a benchmark.
+
+For the matrix, use `benchmark_matrix.py --run --output experiments/m2-hardware`.
+Each feasible entry runs a bounded experiment with normal FLASH confirmation;
+both boards need manual bootloader reset between entries. Rejected combinations
+remain recorded with reasons. Repeat the matrix in new directories to establish
+variation; do not infer a best channel from one run. Rank sustained goodput only
+among runs with complete TX telemetry, no payload failures or backwards/duplicate
+sequences, stable diagnostics, and acceptable delivery ratio. Report both
+throughput and loss, plus missed deadlines, rather than forcing the image target.
+
+On hardware, verify initial enumeration, CRC-error recovery, END/START timing,
+near-minimum fixed schedules and max mode at all four payloads; compare USB-active
+and idle exposure buckets, unplug/reopen the monitor to exercise backpressure, and
+verify watchdog recovery from an interrupted sender. Confirm PACKETPTR/CRC handoff
+and actual packet spacing with SWD or a logic analyzer before trusting sub-20-us
+turnaround assumptions. For 102400 bytes, packet count is ceil(102400/payload);
+the stream still uses full-size padding and does not implement a frame protocol.
+
+---
+
+# Archived Milestone 1 procedure (not current M2 behavior)
+
 # Experiment procedure — Milestones 1.1 and 1.2
 
 This experiment measures the existing link before any image transfer, camera

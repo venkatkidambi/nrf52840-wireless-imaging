@@ -4,8 +4,8 @@
 __attribute__((used, section(".experiment_identity")))
 const struct {
     char magic[16];
-    uint32_t frequency, interval, target, power;
+    uint32_t frequency, interval_ms, target, power, payload, interval_us, run_id;
 } experiment_identity = {
-    "IMAGING-CONFIG1", RADIO_FREQ_MHZ, TX_INTERVAL_MS,
-    TX_PACKET_COUNT, RADIO_POWER_DBM
+    "IMAGING-CONFIG2", RADIO_FREQ_MHZ, TX_INTERVAL_MS,
+    TX_PACKET_COUNT, RADIO_POWER_DBM, APP_PAYLOAD_SIZE, TX_INTERVAL_US, RUN_ID
 };

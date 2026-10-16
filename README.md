@@ -7,9 +7,8 @@ the hardware directly, without an RTOS (operating system) or BLE stack.
 **Hardware:** Two Seeed XIAO nRF52840 boards, one transmitter (**TX**) and one
 receiver (**RX**), with USB connections for programming and receiving the image.
 
-**Current status:** Reliable image transfer is implemented through Milestone 4.1.
-The image is currently generated in software. Actual **HM01B0 camera acquisition
-is planned for Milestone 5**.
+**Current status:** Reliable image transfer is implemented using a test image
+generated in software. Capturing images with an **HM01B0 camera** is planned.
 
 ## Bare-Metal Wireless Communication Protocol
 
@@ -33,19 +32,32 @@ is planned for Milestone 5**.
    (a USB serial connection). The computer checks the checksum and compares every
    pixel with the expected test image before saving it.
 
-```mermaid
-flowchart TD
-    TX["TX nRF52840: Image buffer → Packetization → RADIO"]
-    RX["RX nRF52840: RADIO → Reassembly → CRC32 → USB"]
-    PC["Computer: Receive and verify complete grayscale image"]
-    TX -->|2 Mbps wireless image data| RX
-    RX -.->|Retransmission feedback| TX
-    RX -->|USB CDC| PC
-```
+**Why bare metal?** Controlling the hardware directly lets us decide precisely
+when packets leave, how memory is used, and when the radio changes direction,
+with little extra software work between those steps.
 
-**Why bare metal?** Direct control of radio registers, hardware timers, DMA
-buffers, and memory enables deterministic packet scheduling with minimal
-software overhead.
+### How We Make Transfers Faster
+
+- **Less waiting between packets.** The demonstrated setting sends a new packet
+  every **1.1 ms**, down from the conservative 1.5 ms setting. Across 434 packets,
+  that trims roughly **173 ms** from the planned first pass, before feedback or
+  retries. Hardware timers keep this schedule independent of the main program's
+  other work.
+- **Prepare the next packet while sending the current one.** Two packet buffers
+  work in turns: one is used by the radio while the other gets ready. The receiver
+  also switches buffers before processing the packet that just arrived, so it
+  can listen for the next one sooner.
+- **Keep the radio ready.** Fast RX/TX ramp-up is enabled when starting to listen
+  or transmit. Between packets in the same direction, the radio stays ready
+  instead of repeating that startup step for every packet.
+- **Let hardware move the bytes.** EasyDMA transfers packet data directly
+  between memory and the radio, freeing the processor for packet preparation
+  and checking.
+- **Resend only what is missing.** If some packets are lost, the receiver asks
+  for those pieces instead of restarting the entire image transfer.
+- **Do less calculation for the same checks.** A precomputed lookup table
+  reduces the work needed to calculate CRC32. The complete image still gets
+  checked, and the computer independently compares every test-image pixel.
 
 ### Measured Performance
 
@@ -63,8 +75,10 @@ an overall success rate. Wireless timing excludes image generation and USB
 transfer. The radio's 2 Mbps rate includes protocol overhead; it is not the
 image delivery rate.
 
-The baseline control profile is the starting point. Reduced-guard `balanced`
-and `aggressive` profiles still require physical validation; see the
+The `baseline` setting keeps short pauses when the boards take turns speaking
+and listening. Experimental `balanced` and `aggressive` settings shorten these
+pauses, but still need hardware testing before their benefits are confirmed.
+See the
 [validation guide](docs/radio-freeze.md).
 
 ## Get Started
@@ -147,7 +161,7 @@ benchmark matrices, and telemetry.
 | [Image transfer](docs/image-transfer.md) | Packet format, recovery, USB framing, and memory use |
 | [Performance audit](docs/performance.md) | Timing analysis and optimization history |
 | [Control timing audit](docs/control-audit.md) | Feedback timing and guard intervals |
-| [Milestone 4.1 validation](docs/radio-freeze.md) | Experimental profiles and required hardware checks |
+| [Radio validation](docs/radio-freeze.md) | Experimental profiles and required hardware checks |
 | [Validation history](docs/validation.md) | Software checks and hardware validation limits |
 | [Flash layout](docs/layout.md) | Memory map and preserved bootloader/SoftDevice regions |
 

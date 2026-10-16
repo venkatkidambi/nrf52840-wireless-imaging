@@ -1,14 +1,15 @@
 # nRF52840 Wireless Imaging
 
-Send a grayscale image wirelessly between two small microcontrollers, then save
-and verify it on a computer. The project uses **bare-metal C**: firmware controls
+The project transfers a grayscale image wirelessly between two small
+microcontrollers, then saves and verifies the image on a computer.
+The implementation uses **bare-metal C**: firmware controls
 the hardware directly, without an RTOS (operating system) or BLE stack.
 
-**Direct RADIO control with EasyDMA and TIMER + PPI:** Our firmware programs the
+**Direct RADIO control with EasyDMA and TIMER + PPI:** The firmware programs the
 nRF52840's radio registers directly. EasyDMA moves packet bytes between memory
 and the radio, while TIMER + PPI starts scheduled transmissions in hardware.
 Fast RX/TX ramp-up gets the radio ready quickly when switching to transmit or
-receive. The CPU prepares the packets; hardware handles their precise launch
+receive. The CPU prepares the packets; hardware handles precise packet launch
 timing and radio data movement.
 
 **Measured efficiency: about 74–77% of the radio's theoretical 2 Mbps capacity
@@ -18,10 +19,10 @@ delivers useful image data.** In two successful low-retry runs, a complete
 recovery time.
 
 At 2 Mbps, sending the image bytes alone would take **409.6 ms**, assuming no
-packet headers, gaps, feedback, or retries. Our measured transfers took about
+packet headers, gaps, feedback, or retries. The measured transfers took about
 **125–144 ms beyond that ideal minimum**, while supporting missing-packet
 recovery and full-image integrity verification. This comparison covers the
-wireless transfer; it excludes image generation and USB delivery. These two
+wireless transfer, excluding image generation and USB delivery. The two
 runs demonstrate achievable performance, not a guaranteed speed or success rate.
 
 **Hardware:** Two Seeed XIAO nRF52840 boards, one transmitter (**TX**) and one
@@ -47,20 +48,20 @@ generated in software. Capturing images with an **HM01B0 camera** is planned.
 4. **Error recovery:** RX tracks missing packets and asks TX to resend only those
    packets. This selective retransmission uses half-duplex feedback: the boards
    take turns sending and listening.
-5. **Verification and USB transfer:** RX reassembles the image, checks its
-   **CRC32 checksum** for corruption, and sends it to the computer over **USB CDC**
+5. **Verification and USB transfer:** RX reassembles the image, checks the
+   **CRC32 checksum** for corruption, and sends the image to the computer over **USB CDC**
    (a USB serial connection). The computer checks the checksum and compares every
-   pixel with the expected test image before saving it.
+   pixel with the expected test image before saving the received image.
 
-**Why bare metal?** Controlling the hardware directly lets us decide precisely
-when packets leave, how memory is used, and when the radio changes direction,
+**Why bare metal?** Direct hardware control enables precise control over
+packet timing, memory use, and radio direction changes,
 with little extra software work between those steps.
 
-### How We Make Transfers Faster
+### How the Implementation Makes Transfers Faster
 
 **Hardware handles precise transmission timing and moves packet data, freeing
 the CPU to prepare and verify the image.** Once the CPU schedules a packet,
-TIMER + PPI trigger its transmission without the CPU issuing a command at that
+TIMER + PPI trigger transmission without the CPU issuing a command at that
 exact moment. EasyDMA moves the bytes between RAM and the radio without the CPU
 copying each byte into or out of the radio.
 
@@ -83,8 +84,8 @@ packet.
   must still keep the next packet ready on time.
 - **Prepare the next packet while sending the current one.** Two packet buffers
   work in turns: one is used by the radio while the other gets ready. The receiver
-  also switches buffers before processing the packet that just arrived, so it
-  can listen for the next one sooner.
+  also switches buffers before processing the packet that just arrived,
+  allowing reception of the next packet to start sooner.
 - **Keep the radio ready.** Fast RX/TX ramp-up is enabled when starting to listen
   or transmit. Between packets in the same direction, the radio stays ready
   instead of repeating that startup step for every packet.
@@ -110,12 +111,12 @@ packet.
 The recorded successful wireless transfer times were **534.552 ms** and
 **553.877 ms**. These are individual results, not a guaranteed timing range or
 an overall success rate. Wireless timing excludes image generation and USB
-transfer. The radio's 2 Mbps rate includes protocol overhead; it is not the
+transfer. The radio's 2 Mbps rate includes protocol overhead and differs from the
 image delivery rate.
 
 The `baseline` setting keeps short pauses when the boards take turns speaking
 and listening. Experimental `balanced` and `aggressive` settings shorten these
-pauses, but still need hardware testing before their benefits are confirmed.
+pauses, but still need hardware testing to confirm the benefits.
 See the
 [validation guide](docs/radio-freeze.md).
 
@@ -154,8 +155,8 @@ terminal in the repository:
 ```
 
 The runner builds the firmware, helps identify the physical RX and TX boards,
-checks their flash layouts, and asks you to type `FLASH`. It programs RX first
-and waits for it to be ready before programming TX. Identify boards through the
+checks the board flash layouts, and requires a typed `FLASH` confirmation.
+The runner programs RX first and waits for RX readiness before programming TX. Identify boards through the
 runner: USB mount names can change after reconnection.
 
 Use `--interval-us 1500` as a conservative fallback. Omitting the interval also

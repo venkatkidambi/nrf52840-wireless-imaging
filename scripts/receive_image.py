@@ -33,6 +33,12 @@ tx_missed_deadlines tx_airtime_mean_us tx_airtime_max_us tx_handoff_mean_us tx_h
 tx_prepare_max_us tx_retransmission_us tx_feedback_us tx_schedule_late_max_us
 tx_to_rx_max_us tx_rx_to_tx_max_us rx_processing_max_us rx_rearm_max_us usb_header_crc_us
 rx_tx_to_rx_max_us rx_to_tx_max_us""".split()
+CONTROL_PHASES = """tx_data_end_to_rx_ready tx_feedback_wait tx_feedback_to_data
+tx_retransmit_burst tx_complete_wait tx_reply_guard rx_end_detect rx_feedback_prepare
+rx_feedback_send rx_frame_verify rx_complete_prepare rx_complete_send rx_confirmation""".split()
+CONTROL_STAT_FIELDS = [f"{phase}_{suffix}" for phase in CONTROL_PHASES
+                       for suffix in ("n", "min_us", "mean_us", "max_us")]
+RESULT_LENGTHS = (96, 180, 4 * (len(STAT_FIELDS) + len(EXTRA_STAT_FIELDS) + len(CONTROL_STAT_FIELDS)))
 
 def require(condition, message):
     if not condition:
@@ -90,7 +96,7 @@ class Parser:
                 _, version, kind, reserved, frame, length, crc = HEADER.unpack_from(self.pending)
                 require(version == 1 and reserved == 0 and kind in LENGTHS, "Invalid USB header")
                 require(length == LENGTHS[kind] or
-                        (kind == RESULT and length == 4 * (len(STAT_FIELDS) + len(EXTRA_STAT_FIELDS))),
+                        (kind == RESULT and length in RESULT_LENGTHS) or (kind == READY and length == 56),
                         "Invalid USB record length")
                 if kind == PIXELS and self.image_started_at is None:
                     self.image_started_at = time.monotonic()
@@ -122,7 +128,12 @@ class Receiver:
             raise ValueError(f"RX reported image failure {struct.unpack('<I', body)[0]}")
         if kind == READY:
             require(self.metadata is None, "RX reset/readiness after frame start")
-            row = dict(zip(READY_FIELDS, struct.unpack("<13I", body)))
+            require(len(body) in (52, 56), "Invalid readiness length")
+            row = dict(zip(READY_FIELDS, struct.unpack("<13I", body[:52])))
+            if len(body) == 56:
+                profile = struct.unpack_from("<I", body, 52)[0]
+                require(profile < 3, "Invalid readiness control profile")
+                row["control_profile"] = ("baseline", "balanced", "aggressive")[profile]
             require(row["run_tag"] == frame, "Readiness frame mismatch")
             return {"event": "ready", "mode": "image", **row}
         if kind == START:
@@ -143,8 +154,8 @@ class Receiver:
             self.pixels = body
             return {"event": "pixels_verified", "bytes": len(body)}
         require(kind == RESULT and self.pixels is not None, "Completion without verified image")
-        require(len(body) in (96, 4 * (len(STAT_FIELDS) + len(EXTRA_STAT_FIELDS))), "Invalid result length")
-        stats = dict(zip(STAT_FIELDS + EXTRA_STAT_FIELDS, struct.unpack(f"<{len(body)//4}I", body)))
+        require(len(body) in RESULT_LENGTHS, "Invalid result length")
+        stats = dict(zip(STAT_FIELDS + EXTRA_STAT_FIELDS + CONTROL_STAT_FIELDS, struct.unpack(f"<{len(body)//4}I", body)))
         require(stats["status"] == 1 and stats["received_packets"] == PACKETS and
                 stats["crc32"] == self.metadata["crc32"], "Invalid completion status/count/checksum")
         require(stats["tx_initial_packets"] == PACKETS and stats["retransmission_rounds"] <= 16 and

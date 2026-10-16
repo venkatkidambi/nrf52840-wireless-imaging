@@ -35,6 +35,7 @@ def require(condition, message):
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("benchmark", "image"), default="benchmark")
+    parser.add_argument("--control-profile", choices=configure.CONTROL_PROFILES)
     parser.add_argument("frequency", nargs="?", help="Legacy frequency MHz")
     parser.add_argument("interval", nargs="?", help="Legacy interval in milliseconds")
     parser.add_argument("count", nargs="?", help="Legacy bounded packet count")
@@ -44,7 +45,7 @@ def arguments(argv=None):
     schedule.add_argument("--interval-us", help="START interval in microseconds")
     schedule.add_argument("--max-throughput", action="store_true")
     schedule.add_argument("--image-profile", choices=tuple(configure.IMAGE_PROFILES),
-                          help="Image interval preset; only baseline (1500 us) has hardware evidence")
+                          help="Image interval preset; 1100 us preferred, 1500 us fallback")
     parser.add_argument("--packets")
     args = parser.parse_args(argv)
     try:
@@ -52,6 +53,8 @@ def arguments(argv=None):
             raise ValueError("Do not mix positional and named values for the same setting")
         if args.image_profile and args.mode != "image":
             raise ValueError("--image-profile requires --mode image")
+        if args.control_profile and args.mode != "image":
+            raise ValueError("--control-profile requires --mode image")
         if args.interval and (args.interval_us is not None or args.max_throughput or args.image_profile):
             raise ValueError("Do not mix legacy milliseconds with microsecond/max scheduling")
         env = {"RADIO_FREQ_MHZ": args.frequency_option or args.frequency or "2440",
@@ -59,8 +62,9 @@ def arguments(argv=None):
                "TX_PACKET_COUNT": args.packets or args.count or ("434" if args.mode == "image" else "10000")}
         if args.mode == "image":
             env["IMAGE_MODE"] = "1"
+            env["CONTROL_PROFILE"] = args.control_profile or "baseline"
             if not args.interval and args.interval_us is None and not args.max_throughput:
-                env["TX_INTERVAL_US"] = "1500"
+                env["TX_INTERVAL_US"] = "1100" if args.control_profile in ("balanced", "aggressive") else "1500"
         if args.interval: env["TX_INTERVAL_MS"] = args.interval
         if args.interval_us is not None: env["TX_INTERVAL_US"] = args.interval_us
         if args.max_throughput: env["TX_INTERVAL_US"] = "0"
@@ -300,6 +304,7 @@ class Runner:
         # Override legacy environment settings so sub-ms builds are unambiguous.
         settings.append("TX_INTERVAL_MS=")
         settings.append(f"IMAGE_MODE={int(self.config.get('mode') == 'image')}")
+        settings.append(f"CONTROL_PROFILE={self.config.get('control_profile', 'baseline')}")
         self.command(["make", "build", *settings], timeout=600)
         manifests = {}
         for role in ("rx", "tx"):

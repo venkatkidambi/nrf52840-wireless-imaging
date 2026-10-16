@@ -19,15 +19,26 @@ def configurations():
     yield "benchmark-247-max", dict(IMAGE_MODE=0, APP_PAYLOAD_SIZE=247, TX_PACKET_COUNT=10000, TX_INTERVAL_US=0)
 
 
+def control_configurations():
+    for profile in configure.CONTROL_PROFILES:
+        yield f"control-{profile}-1100", dict(IMAGE_MODE=1, APP_PAYLOAD_SIZE=240, TX_PACKET_COUNT=434,
+                                            TX_INTERVAL_US=1100, CONTROL_PROFILE=profile)
+    yield "control-baseline-1500", dict(IMAGE_MODE=1, APP_PAYLOAD_SIZE=240, TX_PACKET_COUNT=434,
+                                      TX_INTERVAL_US=1500, CONTROL_PROFILE="baseline")
+    yield from ((name, dict(config, CONTROL_PROFILE="baseline"))
+                for name, config in configurations() if name.startswith("benchmark"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", action="store_true")
+    parser.add_argument("--control-profiles", action="store_true", help="M4.1 control profiles and benchmark regression builds")
     parser.add_argument("--output", type=Path, required=True, help="New directory")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     records = []
-    for name, config in configurations():
-        command = ["make", "build", "TX_INTERVAL_MS=", "RADIO_FREQ_MHZ=2440", "RUN_ID=1",
+    for name, config in (control_configurations() if args.control_profiles else configurations()):
+        command = ["make", "build", "TX_INTERVAL_MS=", "RADIO_FREQ_MHZ=2440", "RUN_ID=1", "CONTROL_PROFILE=baseline",
                    *(f"{k}={v}" for k, v in config.items())]
         record = dict(name=name, command=command, status="planned")
         records.append(record)

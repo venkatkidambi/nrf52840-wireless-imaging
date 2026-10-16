@@ -12,4 +12,5 @@ bool image_radio_exchange(void *context, const uint8_t *request, uint8_t *reply)
 void image_radio_guard(uint32_t end);
 extern uint32_t image_radio_turn_max;
 extern volatile uint32_t image_radio_crc_errors, image_radio_drops;
+extern measurement_t image_radio_confirmation, image_radio_terminal_guard;
 #endif

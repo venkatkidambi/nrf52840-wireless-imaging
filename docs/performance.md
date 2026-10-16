@@ -1,5 +1,9 @@
 # Milestone 4 performance audit
 
+Historical milestone results below. For current M4.1 control timing, software
+validation and the pending physical freeze gate, see [radio-freeze.md](radio-freeze.md)
+and [control-audit.md](control-audit.md).
+
 The preserved hardware baseline is commit `1d38ce1`, experiment
 `2026-10-16_010657_705686-0400_2440MHz_240B_1500us_434`. Its files are untouched.
 `baselines/milestone3/` contains a source archive, rebuilt rollback ELF/UF2/map

@@ -5,12 +5,14 @@ CC := $(CROSS_COMPILE)gcc
 OBJCOPY := $(CROSS_COMPILE)objcopy
 SIZE := $(CROSS_COMPILE)size
 HOST_CC ?= cc
+HOST_CFLAGS ?=
 RADIO_FREQ_MHZ ?= 2440
 TX_PACKET_COUNT ?= 10000
 APP_PAYLOAD_SIZE ?= 32
 RUN_ID ?= 1
 IMAGE_MODE ?= 0
-export RADIO_FREQ_MHZ TX_INTERVAL_MS TX_INTERVAL_US TX_PACKET_COUNT APP_PAYLOAD_SIZE RUN_ID IMAGE_MODE
+CONTROL_PROFILE ?= baseline
+export RADIO_FREQ_MHZ TX_INTERVAL_MS TX_INTERVAL_US TX_PACKET_COUNT APP_PAYLOAD_SIZE RUN_ID IMAGE_MODE CONTROL_PROFILE
 NRFX := deps/nrfx-2.11.0
 CMSIS := deps/CMSIS_5-5.9.0
 TUSB := deps/tinyusb-0.17.0/src
@@ -83,22 +85,24 @@ monitor-rx:
 test:
 	@mkdir -p build
 	@for payload in 32 64 128 240 247; do \
-	  $(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon -DAPP_PAYLOAD_SIZE=$$payload common/protocol.c tests/test_protocol.c -o build/test_protocol && ./build/test_protocol || exit 1; \
+	  $(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Icommon -DAPP_PAYLOAD_SIZE=$$payload common/protocol.c tests/test_protocol.c -o build/test_protocol && ./build/test_protocol || exit 1; \
 	done
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon tests/test_measure.c -o build/test_measure
+	$(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Icommon tests/test_measure.c -o build/test_measure
 	./build/test_measure
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/radio_fakes -Icommon -DAPP_PAYLOAD_SIZE=240 common/radio.c tests/test_radio.c -o build/test_radio
+	$(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Itests/radio_fakes -Icommon -DAPP_PAYLOAD_SIZE=240 common/radio.c tests/test_radio.c -o build/test_radio
 	./build/test_radio
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/radio_fakes -Icommon common/radio_timing.c tests/test_radio_timing.c -o build/test_radio_timing
+	$(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Itests/radio_fakes -Icommon common/radio_timing.c tests/test_radio_timing.c -o build/test_radio_timing
 	./build/test_radio_timing
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon common/clock.c tests/test_clock.c -o build/test_clock
+	$(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon common/clock.c tests/test_clock.c -o build/test_clock
 	./build/test_clock
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon common/image_protocol.c tests/test_image_protocol.c -o build/test_image_protocol
-	./build/test_image_protocol
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon -DIMAGE_MODE=1 -DAPP_PAYLOAD_SIZE=240 -DTX_PACKET_COUNT=434 -DTX_INTERVAL_US=1500 common/image_protocol.c common/image_usb.c tests/test_image_usb.c -o build/test_image_usb
+	@for profile in 0 1 2; do \
+	  $(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Icommon -DIMAGE_CONTROL_PROFILE=$$profile common/image_protocol.c tests/test_image_protocol.c -o build/test_image_protocol && ./build/test_image_protocol || exit 1; \
+	done
+	$(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Icommon -DIMAGE_MODE=1 -DAPP_PAYLOAD_SIZE=240 -DTX_PACKET_COUNT=434 -DTX_INTERVAL_US=1500 common/image_protocol.c common/image_usb.c tests/test_image_usb.c -o build/test_image_usb
 	./build/test_image_usb build/test_image_stream.bin
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon -DIMAGE_MODE=1 -DAPP_PAYLOAD_SIZE=240 -DTX_PACKET_COUNT=434 -DTX_INTERVAL_US=1500 common/image_protocol.c common/image_radio.c tests/test_image_radio.c -o build/test_image_radio
-	./build/test_image_radio
+	@for profile in 0 1 2; do \
+	  $(HOST_CC) $(HOST_CFLAGS) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon -DIMAGE_CONTROL_PROFILE=$$profile -DIMAGE_MODE=1 -DAPP_PAYLOAD_SIZE=240 -DTX_PACKET_COUNT=434 -DTX_INTERVAL_US=1100 common/image_protocol.c common/image_radio.c tests/test_image_radio.c -o build/test_image_radio && ./build/test_image_radio || exit 1; \
+	done
 	$(PYTHON) -m unittest discover -s tests -v
 clean:
 	rm -rf build

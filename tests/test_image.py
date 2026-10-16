@@ -125,7 +125,7 @@ class ImageReceive(unittest.TestCase):
 class ImageRunner(unittest.TestCase):
     def test_mode_defaults_and_benchmark_cli_unchanged(self):
         cfg = run.arguments(["--mode", "image", "--frequency", "2440"])
-        self.assertEqual(cfg, dict(CONFIG, mode="image", payload_bytes=240, packet_target=434,
+        self.assertEqual(cfg, dict(CONFIG, mode="image", control_profile="baseline", payload_bytes=240, packet_target=434,
                                    tx_interval_us=1500, tx_interval_ms=1))
         self.assertEqual(run.arguments(["--mode", "benchmark"]), CONFIG)
         cfg = run.arguments(["--frequency", "2440", "--payload", "240", "--interval-us", "1500", "--packets", "10000"])
@@ -136,7 +136,9 @@ class ImageRunner(unittest.TestCase):
 
     def test_embedded_image_mode_is_distinct_and_mode_change_invalidates(self):
         raw = firmware_image() + firmware.IMAGE_CONFIG_MAGIC + struct.pack("<7I", 2440, 1, 434, 0, 240, 1500, 1)
-        self.assertEqual(firmware.image_configuration(raw), run.arguments(["--mode", "image"]))
+        expected = run.arguments(["--mode", "image"])
+        expected.pop("control_profile")
+        self.assertEqual(firmware.image_configuration(raw), expected)
         with self.assertRaises(ValueError): firmware.image_configuration(raw + firmware.CONFIG_MAGIC)
         with tempfile.TemporaryDirectory() as folder:
             header = Path(folder) / "config.h"
@@ -188,9 +190,11 @@ class ImageRunner(unittest.TestCase):
                 with self.assertRaises(run.RunError): runner.collect(run.time.monotonic())
 
 class LinkedImage(unittest.TestCase):
+    artifact_folder = ROOT / "build"
+
     def test_memory_dma_alignment_stack_no_heap_or_camera_symbols(self):
         for role in ("tx", "rx"):
-            path = ROOT / "build" / f"{role}.elf"
+            path = self.artifact_folder / f"{role}.elf"
             if not path.exists(): self.skipTest("Build firmware to audit linked symbols")
             elf = path.read_bytes()
             h = struct.unpack_from("<HHIIIIIHHHHHH", elf, 16)

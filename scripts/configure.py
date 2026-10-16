@@ -13,6 +13,7 @@ FIELDS = {"RADIO_FREQ_MHZ": "freq_mhz", "TX_INTERVAL_MS": "tx_interval_ms",
           "TX_PACKET_COUNT": "packet_target", "APP_PAYLOAD_SIZE": "payload_bytes",
           "TX_INTERVAL_US": "tx_interval_us", "RUN_ID": "run_tag"}
 IMAGE_PROFILES = {"baseline": 1500, "1200": 1200, "1100": 1100, "limit": 1044, "max": 0}
+CONTROL_PROFILES = ("baseline", "balanced", "aggressive")
 
 def integer(name, value, low, high):
     if not re.fullmatch(r"0|[1-9][0-9]*", value) or not low <= int(value) <= high:
@@ -24,6 +25,11 @@ def minimum_interval(payload):
 
 def configuration(environ):
     image_mode = integer("IMAGE_MODE", environ.get("IMAGE_MODE", "0"), 0, 1)
+    control = environ.get("CONTROL_PROFILE", "baseline")
+    if control not in CONTROL_PROFILES:
+        raise ValueError("Unknown CONTROL_PROFILE")
+    if not image_mode and control != "baseline":
+        raise ValueError("Control profiles require image mode")
     values = {name: integer(name, environ.get(name, str(default)), low, high)
               for name, (default, low, high) in SETTINGS.items()}
     # Make exports unset optional variables as empty strings.
@@ -45,11 +51,14 @@ def configuration(environ):
         if values["APP_PAYLOAD_SIZE"] != 240 or values["TX_PACKET_COUNT"] != 434 or us > 3000:
             raise ValueError("Image mode requires payload 240, packet count 434 and interval <= 3000 us")
         values["IMAGE_MODE"] = 1
+        values["IMAGE_CONTROL_PROFILE"] = CONTROL_PROFILES.index(control)
     return values
 
 def metadata(values):
     result = {**{field: values[name] for name, field in FIELDS.items()}, "tx_power_dbm": 0}
-    if values.get("IMAGE_MODE"): result["mode"] = "image"
+    if values.get("IMAGE_MODE"):
+        result["mode"] = "image"
+        result["control_profile"] = CONTROL_PROFILES[values["IMAGE_CONTROL_PROFILE"]]
     return result
 
 def write_config(path, environ, invalidate=False):

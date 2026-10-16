@@ -8,12 +8,15 @@ static image_receiver_t rx;
 static uint32_t tick, sent[IMAGE_PACKETS], stats[IMAGE_STATS_WORDS];
 static unsigned loss_mode, start_loss, poll_loss, feedback_loss, complete_loss, commit_loss, commit_ack_loss;
 static uint8_t wire[IMAGE_WIRE_BYTES], reply[IMAGE_WIRE_BYTES];
+static unsigned stale_feedback;
+static uint32_t measured_now(void *context) { (void)context; return ++tick; }
 static void reset(void)
 {
     memset(&guarded, 0xa5, sizeof guarded);
     image_receiver_init(&rx, guarded.pixels, 0x12345678);
     memset(sent, 0, sizeof sent); memset(stats, 0, sizeof stats);
-    tick = 0xffff0000u; loss_mode = 0;
+    tick = 0xffff0000u; loss_mode = stale_feedback = 0;
+    rx.clock = measured_now;
     start_loss = poll_loss = feedback_loss = complete_loss = commit_loss = commit_ack_loss = 0;
 }
 static uint32_t now(void *context) { (void)context; return tick; }
@@ -27,7 +30,8 @@ static bool send(void *context, const uint8_t *p)
     if (packet.type == IMG_DATA) {
         unsigned n = ++sent[packet.index];
         if ((loss_mode == 1 && packet.index % 7 == 0 && n <= 2) ||
-            (loss_mode == 2 && packet.index == IMAGE_PACKETS - 1)) return true;
+            (loss_mode == 2 && packet.index == IMAGE_PACKETS - 1) ||
+            (loss_mode == 3 && packet.index == IMAGE_PACKETS - 1 && n == 1)) return true;
     }
     assert(!image_receiver_packet(&rx, p, IMAGE_WIRE_BYTES, tick, reply));
     return true;
@@ -46,8 +50,12 @@ static bool exchange(void *context, const uint8_t *p, uint8_t *out)
         if (out[1] == IMG_COMPLETE && complete_loss) { --complete_loss; drop = true; }
         if (out[1] == IMG_COMMIT_ACK && commit_ack_loss) { --commit_ack_loss; drop = true; }
     }
-    tick += drop ? image_reply_timeout(p[1]) : 2 * IMAGE_GUARD_US + 1024;
+    tick += drop ? image_reply_timeout(p[1]) : IMAGE_REQUEST_GUARD_US + IMAGE_REPLY_GUARD_US + 1024;
     image_receiver_tick(&rx, tick);
+    if (!drop && out[1] == IMG_MISSING && stale_feedback) {
+        --stale_feedback;
+        image_put16(out + 6, image_get16(out + 6) + 1u); /* Future/out-of-order reply. */
+    }
     return !drop;
 }
 static image_link_t link = {NULL, now, send, exchange, NULL};
@@ -119,10 +127,12 @@ int main(void)
     assert(!memcmp(source, guarded.pixels, IMAGE_BYTES)); canaries();
     image_encode(wire, IMG_END, rx.frame, 0, 0, NULL, 0);
     assert(image_receiver_packet(&rx, wire, sizeof wire, tick, reply) && reply[1] == IMG_COMPLETE);
+    assert(rx.phases[ICR_VERIFY].count == 1 && rx.phases[ICR_COMPLETE_PREP].count == 1);
     /* Complete remains immutable and duplicate END resends ACK. */
     data(0); assert(!memcmp(source, guarded.pixels, IMAGE_BYTES));
     image_encode(wire, IMG_END, rx.frame, 0, 0, NULL, 0);
     assert(image_receiver_packet(&rx, wire, sizeof wire, tick, reply) && reply[1] == IMG_COMPLETE);
+    assert(rx.phases[ICR_VERIFY].count == 1 && rx.phases[ICR_COMPLETE_PREP].count == 2);
 
     reset(); start(); data(0);
     image_encode(wire, IMG_END, rx.frame, 0, 0, NULL, 0);
@@ -144,8 +154,12 @@ int main(void)
     image_receiver_tick(&rx, tick + IMAGE_IDLE_TIMEOUT_US);
     assert(rx.failed && !rx.committed);
 
-    reset(); assert(image_transmit(&link, source, rx.frame, stats));
+    reset();
+    for (unsigned i = 0; i < IMAGE_TX_PHASE_WORDS; ++i) stats[IMAGE_TX_PHASE_FIRST+i] = i + 100;
+    assert(image_transmit(&link, source, rx.frame, stats));
     assert(rx.committed && rx.verified && stats[IM_ROUNDS] == 0);
+    for (unsigned i = 0; i < IMAGE_TX_PHASE_WORDS; ++i) assert(rx.stats[IMAGE_TX_PHASE_FIRST+i] == i + 100);
+    assert(rx.stats[IMAGE_RX_PHASE_FIRST + 4 * ICR_VERIFY] == 1);
     assert(rx.stats[IM_INITIAL_MISSING] == 0 && !memcmp(source, guarded.pixels, IMAGE_BYTES));
 
     reset(); loss_mode = 1; start_loss = poll_loss = feedback_loss = complete_loss = commit_loss = 2;
@@ -154,6 +168,21 @@ int main(void)
     assert(rx.stats[IM_INITIAL_MISSING] == 62 && stats[IM_CONTROL_RETRIES] == 10);
     for (unsigned i = 0; i < IMAGE_PACKETS; ++i) assert(sent[i] == (i % 7 ? 1u : 3u));
     assert(!memcmp(source, guarded.pixels, IMAGE_BYTES)); canaries();
+
+    reset(); loss_mode = 3; feedback_loss = 1; stale_feedback = 1;
+    assert(image_transmit(&link, source, rx.frame, stats));
+    assert(rx.committed && stats[IM_ROUNDS] == 1 && stats[IM_RETRANSMITS] == 1);
+    assert(rx.stats[IM_INITIAL_MISSING] == 1 && sent[433] == 2);
+    assert(stats[IM_CONTROL_RETRIES] == 2);
+    assert(rx.phases[ICR_VERIFY].count == 1);
+    assert(rx.phases[ICR_FEEDBACK_PREP].count == 3); /* Duplicate END is idempotent. */
+    assert(rx.phases[ICR_COMPLETE_PREP].count == 1);
+    assert(!memcmp(source, guarded.pixels, IMAGE_BYTES));
+
+    reset(); loss_mode = 3; feedback_loss = image_control_tries(IMG_END);
+    assert(!image_transmit(&link, source, rx.frame, stats));
+    assert(!rx.verified && rx.failed && stats[IM_CONTROL_RETRIES] == IMAGE_CONTROL_TRIES);
+    assert((uint32_t)(tick - 0xffff0000u) < IMAGE_FRAME_TIMEOUT_US);
 
     reset(); complete_loss = IMAGE_CONTROL_TRIES;
     assert(!image_transmit(&link, source, rx.frame, stats));

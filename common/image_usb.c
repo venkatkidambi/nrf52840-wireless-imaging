@@ -44,7 +44,8 @@ void image_usb_task(image_receiver_t *s, bool radio_ready)
         if (!s->active && !s->failed && (just_connected || (uint32_t)(time_us() - last_ready) >= 1000000u)) {
             const uint32_t config[] = {RADIO_FREQ_MHZ, TX_INTERVAL_MS, TX_PACKET_COUNT,
                 RADIO_POWER_DBM, APP_PAYLOAD_SIZE, TX_INTERVAL_US, RUN_ID, radio_ready,
-                s->active, image_radio_crc_errors, s->stats[IM_INVALID], image_radio_drops, usb_errors};
+                s->active, image_radio_crc_errors, s->stats[IM_INVALID], image_radio_drops, usb_errors,
+                IMAGE_CONTROL_PROFILE};
             for (unsigned i = 0; i < sizeof config / sizeof config[0]; ++i) image_put32(body + 4*i, config[i]);
             begin(IMAGE_USB_READY, s, body, sizeof config); last_ready = time_us();
         } else if (s->failed && !result_sent) {

@@ -1,4 +1,4 @@
-# nRF52840 Wireless Imaging — Milestone 4
+# nRF52840 Wireless Imaging — Milestone 4.1
 
 Reliable image mode now transfers and verifies a complete **102400-byte, 320 × 320
 grayscale image**, with selective retransmission, frame CRC32, binary USB CDC,
@@ -8,16 +8,23 @@ dual-board flashing workflow remain available unchanged.
 First operator-run image experiment (connect and double-reset both boards first):
 
 ```sh
-./scripts/run_experiment.sh --mode image --frequency 2440
+./scripts/run_experiment.sh --mode image --frequency 2440 --interval-us 1100 --control-profile baseline
 ```
 
 The runner uses the existing identity/preflight/`FLASH` procedure and flashes RX
 before TX. See [image protocol, timing, memory, output files and failure handling](docs/image-transfer.md).
-The preserved M3 hardware run verified all pixels in 735,221 us reliable radio
-time at 1500 us spacing. M4 adds staged TX scheduling, byte-table CRC, faster
-pattern generation, USB header coalescing, and detailed telemetry. **M4 performance
-is not yet hardware-validated.** No boards were flashed during implementation.
-See the [performance audit, preserved baseline and validation procedure](docs/performance.md). The following benchmark documentation continues to describe M2 mode.
+Verified 1100 µs trials completed full images in 534,552 and 553,877 µs. These
+are individual successes, not a latency distribution. M4.1 adds control-phase
+instrumentation and opt-in `balanced` / `aggressive` guards; `baseline` preserves
+3 ms guards and existing retry windows. The no-option image CLI still defaults
+to 1500 µs for compatibility; 1100 µs is preferred and 1500 µs remains the fallback.
+**This revision's reduced guards await physical validation.** No boards were
+flashed during implementation.
+
+See the [control audit](docs/control-audit.md) and
+[freeze candidate, telemetry, validation results and hardware gate](docs/radio-freeze.md).
+The recommended tag is `radio-image-v1.0`, only after physical validation.
+The following benchmark documentation continues to describe M2 mode.
 
 ## Preserved benchmark mode
 

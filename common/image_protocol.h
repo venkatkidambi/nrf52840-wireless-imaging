@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "image_control.h"
+#include "measure.h"
 
 #define IMAGE_WIDTH 320u
 #define IMAGE_HEIGHT 320u
@@ -14,20 +16,34 @@
 #define IMAGE_BITMAP_BYTES ((IMAGE_PACKETS + 7u) / 8u)
 #define IMAGE_ROUNDS 16u
 #define IMAGE_CONTROL_TRIES 8u
-#define IMAGE_GUARD_US 3000u
+#define IMAGE_GUARD_US 3000u /* Legacy baseline reference; live guards in image_control.h. */
 #define IMAGE_REPLY_TIMEOUT_US 120000u
 #define IMAGE_SHORT_REPLY_TIMEOUT_US 20000u
 #define IMAGE_IDLE_TIMEOUT_US 5000000u
 #define IMAGE_FRAME_TIMEOUT_US 30000000u
-#define IMAGE_STATS_WORDS 45u
+#define IMAGE_STATS_WORDS 97u
+#define IMAGE_TX_PHASE_FIRST 45u
+#define IMAGE_TX_PHASE_WORDS 24u
+#define IMAGE_RX_PHASE_FIRST 69u
 #define IMAGE_TX_WORDS 13u
 #define IMAGE_TX_EXTRA_FIRST 24u
 #define IMAGE_TX_EXTRA_WORDS 16u
-#define IMAGE_COMMIT_WORDS (IMAGE_TX_WORDS + IMAGE_TX_EXTRA_WORDS)
+#define IMAGE_LEGACY_COMMIT_WORDS (IMAGE_TX_WORDS + IMAGE_TX_EXTRA_WORDS)
+#define IMAGE_COMMIT_WORDS (IMAGE_LEGACY_COMMIT_WORDS + IMAGE_TX_PHASE_WORDS)
+_Static_assert(IMAGE_COMMIT_WORDS * 4u <= IMAGE_DATA_BYTES, "COMMIT fits one packet");
+enum { ICT_DATA_READY, ICT_FEEDBACK_WAIT, ICT_FEEDBACK_DATA, ICT_RETRANS_BURST,
+       ICT_COMPLETE_WAIT, ICT_REPLY_GUARD, ICT_COUNT };
+enum { ICR_END_DETECT, ICR_FEEDBACK_PREP, ICR_FEEDBACK_SEND, ICR_VERIFY,
+       ICR_COMPLETE_PREP, ICR_COMPLETE_SEND, ICR_CONFIRM, ICR_COUNT };
+_Static_assert(IMAGE_TX_PHASE_WORDS == 4u * ICT_COUNT, "TX phase schema");
+_Static_assert(IMAGE_TX_PHASE_FIRST + IMAGE_TX_PHASE_WORDS == IMAGE_RX_PHASE_FIRST, "Phase ownership");
+_Static_assert(IMAGE_RX_PHASE_FIRST + 4u * ICR_COUNT == IMAGE_STATS_WORDS, "RX phase schema");
+static inline void image_measure_export(uint32_t *out, const measurement_t *m)
+{ out[0] = m->count; out[1] = m->min; out[2] = measurement_mean(m); out[3] = m->max; }
 enum { IMG_START = 1, IMG_READY, IMG_DATA, IMG_END, IMG_MISSING,
        IMG_COMPLETE, IMG_COMMIT, IMG_COMMIT_ACK, IMG_ABORT };
 /* END may require full-frame CRC; START/COMMIT only produce a small reply.
- * Guards are unchanged. Short timeout still exceeds two guards + two packets. */
+ * Short timeout still exceeds the largest guards plus two packets. */
 static inline uint32_t image_reply_timeout(uint8_t type)
 { return type == IMG_END ? IMAGE_REPLY_TIMEOUT_US : IMAGE_SHORT_REPLY_TIMEOUT_US; }
 static inline unsigned image_control_tries(uint8_t type)
@@ -75,7 +91,12 @@ typedef struct {
     uint32_t frame, crc, started, last_activity, stats[IMAGE_STATS_WORDS];
     uint16_t token;
     bool active, verified, committed, failed, initial_seen;
+    /* Optional foreground timer; native protocol users may leave it unset. */
+    uint32_t (*clock)(void *context);
+    void *clock_context;
+    measurement_t phases[ICR_COUNT];
 } image_receiver_t;
+void image_receiver_measure(image_receiver_t *s, unsigned phase, uint32_t elapsed);
 void image_receiver_init(image_receiver_t *s, uint8_t pixels[IMAGE_BYTES], uint32_t frame);
 /* Foreground only. Validated DATA copied into pixels, never DMA-owned storage.
  * True means reply is ready; caller transmits after the request-END guard. */

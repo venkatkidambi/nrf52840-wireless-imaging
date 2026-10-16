@@ -10,6 +10,7 @@ static bool listening, pending, owns_dma, lose_reply, corrupt_reply;
 static const uint8_t *owned, *staged;
 static uint32_t staged_interval;
 static bool fail_wait;
+static bool complete_reply, stale_token;
 static uint8_t saved[IMAGE_WIRE_BYTES], response[IMAGE_WIRE_BYTES];
 static radio_rx_handler_t handler;
 static radio_tx_result_t result;
@@ -49,10 +50,18 @@ bool radio_tx_wait(radio_tx_result_t *out)
     assert(owns_dma && !memcmp(owned, saved, sizeof saved)); owns_dma = false;
     clock_tick += 1024; result.end = end_tick = clock_tick;
     result.addressed = true; *out = result;
-    if (saved[1] == IMG_START) {
+    if (saved[1] == IMG_START || saved[1] == IMG_END || saved[1] == IMG_COMMIT) {
         image_encode(response, corrupt_reply ? IMG_COMMIT_ACK : IMG_READY,
                      image_get32(saved+2), 0, 0, NULL, 0);
-        response_end = end_tick + IMAGE_GUARD_US + 1024;
+        if (saved[1] == IMG_END) {
+            uint8_t body[IMAGE_BITMAP_BYTES] = {1};
+            image_encode(response, complete_reply ? IMG_COMPLETE : IMG_MISSING,
+                         image_get32(saved+2), image_get16(saved+6) + (stale_token ? 1 : 0),
+                         0, body, complete_reply ? 4 : sizeof body);
+        }
+        if (saved[1] == IMG_COMMIT)
+            image_encode(response, IMG_COMMIT_ACK, image_get32(saved+2), image_get16(saved+6), 0, NULL, 0);
+        response_end = end_tick + IMAGE_REQUEST_GUARD_US + 1024;
         response_at = response_end; pending = !lose_reply;
     }
     if (staged) {
@@ -68,7 +77,7 @@ int main(void)
     image_encode(packet, IMG_START, 7, 0, 0, metadata, sizeof metadata);
     clock_tick = 0xffff0000u;
     assert(image_radio_exchange(NULL, packet, reply));
-    assert(reply[1] == IMG_READY && (uint32_t)(clock_tick - response_end) >= IMAGE_GUARD_US);
+    assert(reply[1] == IMG_READY && (uint32_t)(clock_tick - response_end) >= IMAGE_REPLY_GUARD_US);
     assert(image_radio_turn_max >= 50 && turns == 2);
     lose_reply = true;
     uint32_t start = clock_tick;
@@ -77,6 +86,7 @@ int main(void)
     assert((uint32_t)(clock_tick - start) < IMAGE_SHORT_REPLY_TIMEOUT_US + 3000);
     lose_reply = false; corrupt_reply = true;
     assert(!image_radio_exchange(NULL, packet, reply)); /* Wrong response type cannot truncate window. */
+    corrupt_reply = false;
 
     uint8_t pixels[IMAGE_DATA_BYTES] = {0};
     for (unsigned i = 0; i < 10; ++i) {
@@ -88,6 +98,39 @@ int main(void)
     uint32_t stats[IMAGE_STATS_WORDS] = {0}; image_radio_stats(stats);
     assert(stats[IM_SPACING_N] == 9 && stats[IM_SPACING_MEAN] == TX_INTERVAL_US);
     assert(stats[IM_MISSED] == 0 && stats[IM_AIR_MEAN] == 1024);
+    image_encode(packet, IMG_END, 7, 0, 0, NULL, 0);
+    assert(image_radio_exchange(NULL, packet, reply));
+    image_radio_stats(stats);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_DATA_READY] == 1);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_DATA_READY + 1] >= 1074);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_FEEDBACK_WAIT] == 1);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_FEEDBACK_WAIT + 1] == IMAGE_REQUEST_GUARD_US + 1024);
+    image_encode(packet, IMG_DATA, 7, 1, 0, pixels, sizeof pixels);
+    assert(image_radio_send(packet) && image_radio_flush());
+    image_encode(packet, IMG_END, 7, 1, 0, NULL, 0);
+    complete_reply = true;
+    assert(image_radio_exchange(NULL, packet, reply));
+    image_radio_stats(stats);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_FEEDBACK_DATA] == 1);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_FEEDBACK_DATA + 1] >= IMAGE_REPLY_GUARD_US + 50);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_RETRANS_BURST] == 1);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_RETRANS_BURST + 1] == 1024);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_COMPLETE_WAIT] == 1);
+    assert(stats[IMAGE_TX_PHASE_FIRST + 4 * ICT_REPLY_GUARD] == 3);
+    stale_token = true;
+    assert(!image_radio_exchange(NULL, packet, reply));
+    stale_token = false;
+    uint8_t commit[IMAGE_COMMIT_WORDS * 4u] = {0};
+    image_encode(packet, IMG_COMMIT, 7, 2, 0, commit, sizeof commit);
+    assert(image_radio_exchange(NULL, packet, reply));
+    assert(image_radio_confirmation.count == 1 && image_radio_terminal_guard.count == 1);
+    if (IMAGE_CONTROL_PROFILE == 0) assert(image_radio_terminal_guard.min >= IMAGE_REPLY_GUARD_US - 5);
+    else assert(image_radio_terminal_guard.max < 10);
+    /* Guard is anchored to END: processing may consume part/all of it. */
+    start = radio_time(); image_radio_guard(start);
+    assert((uint32_t)(radio_time() - start) >= IMAGE_REQUEST_GUARD_US);
+    start = clock_tick; image_radio_guard(start - IMAGE_REQUEST_GUARD_US);
+    assert((uint32_t)(clock_tick - start) < 10);
     image_encode(packet, IMG_DATA, 7, 0, 0, pixels, sizeof pixels);
     assert(image_radio_send(packet)); fail_wait = true;
     assert(!image_radio_flush() && !owns_dma); fail_wait = false;

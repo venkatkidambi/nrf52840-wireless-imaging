@@ -27,7 +27,7 @@ int main(int argc, char **argv)
     image_receiver_t s;
     image_generate(pixels); image_receiver_init(&s, pixels, 1);
     for (unsigned i = 0; i < 100; ++i) image_usb_task(&s, true);
-    assert(used == 24 + 52);
+    assert(used == 24 + 56);
     s.active = true; s.crc = image_crc32(pixels, sizeof pixels);
     s.verified = s.committed = true;
     s.stats[IM_STATUS] = IMAGE_OK; s.stats[IM_RECEIVED] = IMAGE_PACKETS;
@@ -35,10 +35,10 @@ int main(int argc, char **argv)
     s.stats[IM_TX_TOTAL_US] = 700000; s.stats[IM_INITIAL_US] = 650000;
     blocked = true;
     for (unsigned i = 0; i < 1000; ++i) image_usb_task(&s, true);
-    assert(used == 76); /* No drop when the host is not accepting bytes. */
+    assert(used == 80); /* No drop when the host is not accepting bytes. */
     blocked = false;
     for (unsigned i = 0; i < 20000; ++i) image_usb_task(&s, true);
-    unsigned expected = 76 + 44 + 24 + IMAGE_BYTES + 24 + IMAGE_STATS_WORDS * 4;
+    unsigned expected = 80 + 44 + 24 + IMAGE_BYTES + 24 + IMAGE_STATS_WORDS * 4;
     assert(used == expected);
     if (argc == 2) {
         FILE *file = fopen(argv[1], "wb"); assert(file);
@@ -47,15 +47,15 @@ int main(int argc, char **argv)
     connected = false; image_usb_task(&s, true);
     used = 0; connected = true;
     for (unsigned i = 0; i < 20000; ++i) image_usb_task(&s, true);
-    assert(used == expected - 76); /* Immutable frame replay from metadata on reconnect. */
+    assert(used == expected - 80); /* Immutable frame replay from metadata on reconnect. */
     assert(!memcmp(output, "NRFIMG3\n", 8) && output[9] == IMAGE_USB_START);
     connected = false; image_usb_task(&s, true);
     used = 0; connected = true;
     for (unsigned i = 0; i < 100; ++i) image_usb_task(&s, true);
-    assert(used > 44 && used < expected - 76); /* Disconnect inside image body. */
+    assert(used > 44 && used < expected - 80); /* Disconnect inside image body. */
     connected = false; image_usb_task(&s, true);
     used = 0; connected = true;
     for (unsigned i = 0; i < 20000; ++i) image_usb_task(&s, true);
-    assert(used == expected - 76 && output[9] == IMAGE_USB_START);
+    assert(used == expected - 80 && output[9] == IMAGE_USB_START);
     puts("Image USB: partial writes, stalls, exact bytes, reconnect replay passed");
 }

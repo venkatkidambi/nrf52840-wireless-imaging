@@ -1,4 +1,4 @@
-# Reliable image transfer (Milestones 3–4)
+# Reliable image transfer (Milestones 3–4.1)
 
 This mode transfers one deterministic 320 × 320, 8-bit grayscale frame per reset.
 Both devices allocate a static 102,400-byte framebuffer. The TX producer is
@@ -31,9 +31,10 @@ The benchmark command remains unchanged:
 
 Image mode accepts `--interval-us` from 1044 to 3000, or `--max-throughput`.
 `--image-profile baseline|1200|1100|limit|max` selects 1500/1200/1100/1044/0 us.
-Only the original 1500 us configuration has hardware image evidence; the new
-firmware and all shorter intervals require physical validation. See the
-[performance audit and experiment procedure](performance.md).
+1100 us now has successful full-image hardware trials; 1500 us is the conservative
+fallback. `--control-profile baseline|balanced|aggressive` selects independent
+control timing, with baseline as default. Reduced guards remain experimental;
+see the [control audit](control-audit.md) and [freeze/validation guide](radio-freeze.md).
 Its payload/count are fixed; incompatible overrides are rejected. The 3000 µs
 limit keeps bounded recovery compatible with frame timeouts. Benchmark limits,
 packet formats, logging, and maximum-throughput mode are unchanged. Direct builds
@@ -113,11 +114,11 @@ as well as CRC32. Tests feed the actual C-generated USB stream to the Python par
    same START idempotently: it never clears an in-progress bitmap on a retry.
 2. TX sends the initial burst, then END with token 0, immediately switching to RX.
 3. RX responds only to START/END/COMMIT, at least **3000 µs after that request's
-   hardware END**. It sends one response and immediately returns to RX. There are
+   hardware END** in baseline (1500 us in aggressive). It sends one response and immediately returns to RX. There are
    no unsolicited feedback timers that could collide with a data burst.
 4. TX listens for **120 ms after END requests**, or **20 ms for START/COMMIT**,
    accepting only the corresponding type/frame/token. It waits another 3000 µs
-   from response END before transmitting. END has eight attempts; START/COMMIT
+   from response END before transmitting in baseline (1500 us balanced, 1000 us aggressive). END has eight attempts; START/COMMIT
    have 48, preserving the original 960 ms total timeout allowance. A timeout repeats the control
    request, never the full data burst. CRC-failed replies are ignored.
 5. Each MISSING bitmap creates the next round. TX sends only requested indices;
@@ -129,7 +130,7 @@ as well as CRC32. Tests feed the actual C-generated USB stream to the Python par
 7. TX accepts COMPLETE only with the expected CRC32. Its success event is receipt
    of this ACK. It then sends COMMIT with final TX measurements. RX requires COMMIT
    before exporting pixels; this proves TX actually received COMPLETE. COMMIT and
-   its ACK are retryable. Loss of every COMMIT_ACK can leave TX uncertain about
+   its ACK are retryable. Experimental profiles omit the terminal post-ACK guard because TX sends nothing further. Loss of every COMMIT_ACK can leave TX uncertain about
    telemetry delivery, but RX has the verified image and proof of COMPLETE receipt.
    Loss of every COMMIT leaves RX without proof and it reports timeout, not success.
 
@@ -192,12 +193,12 @@ Each record starts with this 24-byte header:
 | 16 | body_length:u32 |
 | 20 | CRC32 of header bytes 0–19 followed by the body |
 
-Types and exact lengths: READY=1/52 bytes, START=2/20 bytes, PIXELS=3/102400
-bytes, RESULT=4/180 bytes (legacy 96 also accepted by host), ERROR=5/4 bytes. READY contains seven configuration words
+Types and exact lengths: READY=1/56 bytes (legacy 52 accepted), START=2/20 bytes, PIXELS=3/102400
+bytes, RESULT=4/388 bytes (legacy 96/180 accepted), ERROR=5/4 bytes. READY contains seven configuration words
 in retained-firmware order, then radio_ready, active, crc_errors, invalid,
-queue_drops, usb_errors. START repeats the radio metadata. ERROR contains status.
-RESULT contains 45 telemetry words; the original 24 retain their order.
-New RX accepts both the old 52-byte and new 116-byte COMMIT. Old RX cannot accept
+queue_drops, usb_errors, then control-profile ID (0/1/2). START repeats the radio metadata. ERROR contains status.
+RESULT contains 97 telemetry words; the original 45 retain their order.
+New RX accepts 52/116-byte legacy COMMITs and the new 212-byte COMMIT. Old RX cannot accept
 new COMMIT, so always rebuild and flash both roles through the existing runner. The host accepts bounded ASCII
 diagnostic lines only between records; body bytes are never parsed as text/magic.
 It rejects unknown versions/types, oversized or incorrect lengths, bad CRCs,
@@ -214,7 +215,7 @@ or host timeout can therefore fail collection after radio success.
 
 All device times are unsigned local microseconds, wrap-safe within bounded runs.
 No timestamp from one board is subtracted from a timestamp on another board.
-The TX words (0–12 and 24–39) are frozen into COMMIT **before its own retries**; control RTT
+The TX words (0–12, 24–39 and 45–68) are frozen into COMMIT **before its own retries**; control RTT
 and retry aggregates therefore cover START and END exchanges, excluding COMMIT.
 
 | Word | Host field | Definition |
@@ -256,7 +257,8 @@ Initial DATA, retransmission DATA, and END feedback spans are sequential TX
 components; tx_radio_us also includes START negotiation and loop overhead.
 RX verification overlaps TX feedback; USB header CRC is inside enqueue;
 host receive overlaps enqueue. Do not add these overlapping measurements.
-The COMMIT round trip is deliberately excluded from frozen TX telemetry;
+The appended phase fields and RX confirmation span are defined in the
+[freeze guide](radio-freeze.md#added-measurements). The COMMIT round trip is deliberately excluded from frozen TX telemetry;
 receipt of COMMIT proves COMPLETE reached TX, even when COMMIT_ACK is lost.
 
 The host records START metadata reception through validated RESULT as
@@ -281,8 +283,8 @@ measured by these software tests**. Bidirectional loss must be measured anew.
 Each role has one 102400-byte framebuffer. The driver has two 248-byte DMA slots,
 the adapter two 248-byte TX DMA buffers and eight 252-byte packet queue slots.
 RX additionally owns the 55-byte bitmap, protocol state, foreground packet/reply
-copies, 64-byte USB header/prefix, 180-byte metadata area, and existing 4096-byte CDC FIFO.
-Exact linked totals are recorded in [validation results](validation.md).
+copies, 64-byte USB header/prefix, 388-byte metadata area, and existing 4096-byte CDC FIFO.
+Current linked totals are recorded in the [freeze guide](radio-freeze.md#validation-and-memory).
 Low SRAM through 0x20008000 and the top 8192-byte stack reservation remain intact.
 The unchanged linker and ELF/UF2 validator enforce `[0x27000,0xEA000)` flash and
 data/BSS below 0x2003e000. Symbol tests check DMA alignment/strides, framebuffer

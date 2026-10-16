@@ -154,7 +154,8 @@ bool image_decode(const uint8_t *wire, size_t size, image_packet_t *p)
         return p->length == IMAGE_BITMAP_BYTES &&
             !(p->body[IMAGE_BITMAP_BYTES - 1] & (uint8_t)~((1u << (IMAGE_PACKETS % 8)) - 1u));
     case IMG_COMPLETE: return p->length == 4;
-    case IMG_COMMIT: return p->length == IMAGE_TX_WORDS * 4u || p->length == IMAGE_COMMIT_WORDS * 4u;
+    case IMG_COMMIT: return p->length == IMAGE_TX_WORDS * 4u ||
+        p->length == IMAGE_LEGACY_COMMIT_WORDS * 4u || p->length == IMAGE_COMMIT_WORDS * 4u;
     case IMG_ABORT: return p->length == 4;
     default: return p->length == 0;
     }
@@ -176,6 +177,14 @@ bool image_bit(const uint8_t *b, unsigned i)
 { return i < IMAGE_PACKETS && (b[i / 8] & (1u << (i % 8))); }
 void image_receiver_init(image_receiver_t *s, uint8_t pixels[IMAGE_BYTES], uint32_t frame)
 { memset(s, 0, sizeof *s); s->pixels = pixels; s->frame = frame; }
+void image_receiver_measure(image_receiver_t *s, unsigned phase, uint32_t elapsed)
+{
+    if (phase >= ICR_COUNT) return;
+    measurement_add(&s->phases[phase], elapsed);
+    image_measure_export(s->stats + IMAGE_RX_PHASE_FIRST + 4u * phase, &s->phases[phase]);
+}
+static uint32_t receiver_now(image_receiver_t *s)
+{ return s->clock ? s->clock(s->clock_context) : 0; }
 void image_receiver_tick(image_receiver_t *s, uint32_t now)
 {
     if (s->active && !s->committed && !s->failed &&
@@ -233,7 +242,9 @@ bool image_receiver_packet(image_receiver_t *s, const uint8_t *wire, size_t size
             s->initial_seen = true;
         }
         if (s->stats[IM_RECEIVED] == IMAGE_PACKETS && !s->verified) {
+            uint32_t verify = receiver_now(s);
             s->stats[IM_CRC32] = image_crc32(s->pixels, IMAGE_BYTES);
+            if (s->clock) image_receiver_measure(s, ICR_VERIFY, receiver_now(s) - verify);
             s->verified = s->stats[IM_CRC32] == s->crc;
             if (!s->verified) {
                 s->failed = true; s->stats[IM_STATUS] = IMAGE_ERR_CHECKSUM;
@@ -242,6 +253,7 @@ bool image_receiver_packet(image_receiver_t *s, const uint8_t *wire, size_t size
             }
             s->stats[IM_RX_TOTAL_US] = now - s->started;
         }
+        uint32_t prepare = receiver_now(s);
         uint8_t body[IMAGE_BITMAP_BYTES] = {0};
         if (s->verified) {
             image_put32(body, s->crc);
@@ -251,14 +263,19 @@ bool image_receiver_packet(image_receiver_t *s, const uint8_t *wire, size_t size
                 if (!image_bit(s->bitmap, i)) body[i / 8] |= (uint8_t)(1u << (i % 8));
             image_encode(reply, IMG_MISSING, s->frame, p.token, 0, body, sizeof body);
         }
+        if (s->clock) image_receiver_measure(s, s->verified ? ICR_COMPLETE_PREP : ICR_FEEDBACK_PREP,
+                                            receiver_now(s) - prepare);
         return true;
     }
     if (p.type == IMG_COMMIT && s->verified && image_get32(p.body) == IMAGE_OK) {
         if (!s->committed) {
             for (unsigned i = 0; i < IMAGE_TX_WORDS; ++i) s->stats[i] = image_get32(p.body + 4 * i);
-            if (p.length == IMAGE_COMMIT_WORDS * 4u)
+            if (p.length >= IMAGE_LEGACY_COMMIT_WORDS * 4u)
                 for (unsigned i = 0; i < IMAGE_TX_EXTRA_WORDS; ++i)
                     s->stats[IMAGE_TX_EXTRA_FIRST + i] = image_get32(p.body + 4 * (IMAGE_TX_WORDS + i));
+            if (p.length == IMAGE_COMMIT_WORDS * 4u)
+                for (unsigned i = 0; i < IMAGE_TX_PHASE_WORDS; ++i)
+                    s->stats[IMAGE_TX_PHASE_FIRST + i] = image_get32(p.body + 4 * (IMAGE_LEGACY_COMMIT_WORDS + i));
         }
         s->committed = true; s->last_activity = now;
         image_encode(reply, IMG_COMMIT_ACK, s->frame, p.token, 0, NULL, 0); return true;
@@ -331,6 +348,8 @@ bool image_transmit(image_link_t *l, const uint8_t pixels[IMAGE_BYTES], uint32_t
             for (unsigned i = 0; i < IMAGE_TX_WORDS; ++i) image_put32(body + 4*i, stats[i]);
             for (unsigned i = 0; i < IMAGE_TX_EXTRA_WORDS; ++i)
                 image_put32(body + 4*(IMAGE_TX_WORDS+i), stats[IMAGE_TX_EXTRA_FIRST+i]);
+            for (unsigned i = 0; i < IMAGE_TX_PHASE_WORDS; ++i)
+                image_put32(body + 4*(IMAGE_LEGACY_COMMIT_WORDS+i), stats[IMAGE_TX_PHASE_FIRST+i]);
             image_encode(wire, IMG_COMMIT, frame, (uint16_t)(round + 1), 0, body, sizeof body);
             /* COMPLETE receipt is the TX success event. COMMIT proves that receipt
              * to RX/host. Its duplicate ACK may be lost without invalidating pixels. */

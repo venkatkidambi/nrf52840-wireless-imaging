@@ -1,5 +1,9 @@
 # Validation results
 
+Historical milestone results below. For current M4.1 control timing, software
+validation and the pending physical freeze gate, see [radio-freeze.md](radio-freeze.md)
+and [control-audit.md](control-audit.md).
+
 ## Milestone 4 — 2026-10-16
 
 The M3 hardware measurement is preserved separately: reliable radio 735,221 us,

@@ -12,17 +12,24 @@ BOARD_FAMILY = 0x28860045
 MAGIC0, MAGIC1, MAGIC_END = 0x0A324655, 0x9E5D5157, 0x0AB16F30
 CONFIG_MAGIC = b"IMAGING-CONFIG2\0"
 IMAGE_CONFIG_MAGIC = b"IMAGING-CONFIG3\0"
+CONTROL_CONFIG_MAGIC = b"IMAGING-CONFIG4\0"
 
 def image_configuration(binary):
-    require(binary.count(CONFIG_MAGIC) + binary.count(IMAGE_CONFIG_MAGIC) == 1,
+    magics = (CONFIG_MAGIC, IMAGE_CONFIG_MAGIC, CONTROL_CONFIG_MAGIC)
+    require(sum(binary.count(m) for m in magics) == 1,
             "Missing or ambiguous embedded experiment configuration")
-    magic = IMAGE_CONFIG_MAGIC if IMAGE_CONFIG_MAGIC in binary else CONFIG_MAGIC
+    magic = next(m for m in magics if m in binary)
     offset = binary.index(magic) + len(magic)
     require(offset + 28 <= len(binary), "Truncated embedded experiment configuration")
     values = struct.unpack_from("<7I", binary, offset)
     result = dict(zip(("freq_mhz", "tx_interval_ms", "packet_target", "tx_power_dbm",
                        "payload_bytes", "tx_interval_us", "run_tag"), values))
-    if magic == IMAGE_CONFIG_MAGIC: result["mode"] = "image"
+    if magic != CONFIG_MAGIC: result["mode"] = "image"
+    if magic == CONTROL_CONFIG_MAGIC:
+        require(offset + 32 <= len(binary), "Truncated control profile")
+        profile = struct.unpack_from("<I", binary, offset + 28)[0]
+        require(profile < 3, "Invalid control profile")
+        result["control_profile"] = ("baseline", "balanced", "aggressive")[profile]
     return result
 
 def require(condition, message):

@@ -16,8 +16,15 @@ static unsigned tx_slot;
 static radio_tx_result_t prior_data;
 static measurement_t spacing, airtime, handoff;
 static uint32_t missed, late_max, tx_to_rx, rx_to_tx;
+static measurement_t phases[ICT_COUNT];
+static uint32_t data_end, feedback_end, burst_start, burst_end;
+static bool data_end_valid, feedback_pending, burst_active;
+static uint16_t pending_token;
 uint32_t image_radio_turn_max;
 volatile uint32_t image_radio_crc_errors, image_radio_drops;
+/* COMMIT finishes after the telemetry snapshot already sent to RX. Keep its
+ * full local measurements available to a debugger without a new RF handshake. */
+measurement_t image_radio_confirmation, image_radio_terminal_guard;
 static _Alignas(4) uint8_t tx_dma[2][IMAGE_WIRE_BYTES];
 
 static void received(const uint8_t *p, bool crc, uint32_t end)
@@ -51,14 +58,17 @@ bool image_radio_listen(void)
     uint32_t dt = radio_time() - start;
     if (dt > tx_to_rx) tx_to_rx = dt;
     measured_turn(start); transmitting = false; have_data = false;
+    if (ok && data_end_valid) measurement_add(&phases[ICT_DATA_READY], start + dt - data_end);
+    data_end_valid = false;
     return ok;
 }
-void image_radio_guard(uint32_t end)
+static void guard(uint32_t end, uint32_t duration)
 {
     /* Busy wait only for the short direction guard; TIMER/PPI schedules DATA.
      * Sleep's 1 ms wake quantum must not postpone a control reply arbitrarily. */
-    while ((uint32_t)(radio_time() - end) < IMAGE_GUARD_US) {}
+    while ((uint32_t)(radio_time() - end) < duration) {}
 }
+void image_radio_guard(uint32_t end) { guard(end, IMAGE_REQUEST_GUARD_US); }
 bool image_radio_flush(void)
 {
     if (!pending) return true;
@@ -69,6 +79,17 @@ bool image_radio_flush(void)
     }
     pending = false;
     if (pending_data) {
+        data_end = result.end; data_end_valid = true;
+        if (pending_token) {
+            if (!burst_active) {
+                burst_start = result.start; burst_active = true;
+                if (feedback_pending) {
+                    measurement_add(&phases[ICT_FEEDBACK_DATA], result.start - feedback_end);
+                    feedback_pending = false;
+                }
+            }
+            burst_end = result.end;
+        }
         measurement_add(&airtime, result.end - result.address + 24u);
         if (have_data) {
             measurement_add(&spacing, result.address - prior_data.address);
@@ -93,6 +114,8 @@ void image_radio_stats(uint32_t stats[IMAGE_STATS_WORDS])
     stats[IM_HANDOFF_MEAN] = measurement_mean(&handoff); stats[IM_HANDOFF_MAX] = handoff.max;
     stats[IM_LATE_MAX] = late_max;
     stats[IM_TX_TO_RX] = tx_to_rx; stats[IM_TX_RX_TO_TX] = rx_to_tx;
+    for (unsigned i = 0; i < ICT_COUNT; ++i)
+        image_measure_export(stats + IMAGE_TX_PHASE_FIRST + 4u * i, &phases[i]);
 }
 void image_radio_rx_stats(uint32_t stats[IMAGE_STATS_WORDS])
 {
@@ -100,6 +123,13 @@ void image_radio_rx_stats(uint32_t stats[IMAGE_STATS_WORDS])
 }
 bool image_radio_send(const uint8_t *wire)
 {
+    if (wire[1] != IMG_DATA) {
+        if (!image_radio_flush()) return false;
+        if (burst_active) {
+            measurement_add(&phases[ICT_RETRANS_BURST], burst_end - burst_start);
+            burst_active = false;
+        }
+    }
     if (!transmitting) {
         uint32_t start = radio_time();
         if (!radio_tx_enable()) return false;
@@ -115,15 +145,17 @@ bool image_radio_send(const uint8_t *wire)
         }
         if (!image_radio_flush()) return false;
     } else {
-        (void)radio_tx_submit(tx_dma[tx_slot], false, 0);
+        if (!radio_tx_submit(tx_dma[tx_slot], false, 0)) return false;
     }
     pending = true; pending_data = wire[1] == IMG_DATA;
+    pending_token = image_get16(wire + 6);
     /* DATA is pipelined; control callers retain synchronous direction ownership. */
     return pending_data || image_radio_flush();
 }
 bool image_radio_exchange(void *context, const uint8_t *request, uint8_t *reply)
 {
     (void)context;
+    uint32_t exchange_begin = radio_time();
     /* Stop the previous receive before dropping stale queued responses. */
     if (!image_radio_flush()) return false;
     if (!transmitting && !radio_disable()) return false;
@@ -140,7 +172,24 @@ bool image_radio_exchange(void *context, const uint8_t *request, uint8_t *reply)
                 (p.type == IMG_ABORT || (request[1] == IMG_START && p.type == IMG_READY) ||
                  (request[1] == IMG_END && (p.type == IMG_MISSING || p.type == IMG_COMPLETE)) ||
                  (request[1] == IMG_COMMIT && p.type == IMG_COMMIT_ACK))) {
-                image_radio_guard(end);
+                if (p.type == IMG_MISSING) {
+                    measurement_add(&phases[ICT_FEEDBACK_WAIT], end - sent);
+                    feedback_end = end; feedback_pending = true;
+                } else if (p.type == IMG_COMPLETE) {
+                    measurement_add(&phases[ICT_COMPLETE_WAIT], end - sent);
+                }
+                uint32_t before_guard = radio_time();
+                /* ACK is terminal: TX disables the radio next, so there is no
+                 * outgoing packet requiring the peer to return to RX. */
+                if (p.type != IMG_COMMIT_ACK || IMAGE_CONTROL_PROFILE == 0)
+                    guard(end, IMAGE_REPLY_GUARD_US);
+                uint32_t after_guard = radio_time();
+                if (p.type == IMG_COMMIT_ACK) {
+                    measurement_add(&image_radio_terminal_guard, after_guard - before_guard);
+                    measurement_add(&image_radio_confirmation, after_guard - exchange_begin);
+                } else {
+                    measurement_add(&phases[ICT_REPLY_GUARD], after_guard - before_guard);
+                }
                 return true;
             }
         }

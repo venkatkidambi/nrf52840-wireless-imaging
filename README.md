@@ -4,6 +4,19 @@ Send a grayscale image wirelessly between two small microcontrollers, then save
 and verify it on a computer. The project uses **bare-metal C**: firmware controls
 the hardware directly, without an RTOS (operating system) or BLE stack.
 
+**Measured efficiency: about 74–77% of the radio's theoretical 2 Mbps capacity
+delivers useful image data.** In two successful low-retry runs, a complete
+102.4 KB image crossed the wireless link in **535–554 ms**, equivalent to
+**1.48–1.53 Mbps** of image data after accounting for protocol overhead and
+recovery time.
+
+At 2 Mbps, sending the image bytes alone would take **409.6 ms**, assuming no
+packet headers, gaps, feedback, or retries. Our measured transfers took about
+**125–144 ms beyond that ideal minimum**, while supporting missing-packet
+recovery and full-image integrity verification. This comparison covers the
+wireless transfer; it excludes image generation and USB delivery. These two
+runs demonstrate achievable performance, not a guaranteed speed or success rate.
+
 **Hardware:** Two Seeed XIAO nRF52840 boards, one transmitter (**TX**) and one
 receiver (**RX**), with USB connections for programming and receiving the image.
 

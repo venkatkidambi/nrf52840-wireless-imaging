@@ -7,6 +7,10 @@
 #include "radio_timing.h"
 #include "nrf.h"
 #include <stddef.h>
+#if IMAGE_MODE
+int image_rx_main(void);
+int main(void) { return image_rx_main(); }
+#else
 
 static protocol_stats_t stats;
 static uint32_t radio_errors, reports_skipped, rearm_failures;
@@ -41,7 +45,6 @@ static void received(const uint8_t *packet, bool crc, uint32_t end)
     uint32_t duration = radio_time() - begin;
     if (duration > validation_max_us) validation_max_us = duration;
 }
-
 /* Small bounded formatter: no stdio, heap, floating point, or per-packet log. */
 static char line[4096];
 static size_t used;
@@ -198,3 +201,4 @@ int main(void)
         if (duration > usb_work_max_us) usb_work_max_us = duration;
     }
 }
+#endif

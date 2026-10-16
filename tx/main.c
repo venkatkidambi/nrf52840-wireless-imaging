@@ -4,6 +4,10 @@
 #include "system.h"
 #include "radio_timing.h"
 #include "nrf.h"
+#if IMAGE_MODE
+int image_tx_main(void);
+int main(void) { return image_tx_main(); }
+#else
 
 volatile uint32_t tx_attempts, tx_failures, tx_complete;
 static struct { uint8_t bytes[PROTOCOL_PAYLOAD_SIZE]; } __attribute__((aligned(4))) packets[2];
@@ -79,3 +83,4 @@ int main(void)
     time_wakeup_stop();
     for (;;) __WFE();
 }
+#endif

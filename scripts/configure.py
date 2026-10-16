@@ -22,6 +22,7 @@ def minimum_interval(payload):
     return (payload + 16) * 4 + 20
 
 def configuration(environ):
+    image_mode = integer("IMAGE_MODE", environ.get("IMAGE_MODE", "0"), 0, 1)
     values = {name: integer(name, environ.get(name, str(default)), low, high)
               for name, (default, low, high) in SETTINGS.items()}
     # Make exports unset optional variables as empty strings.
@@ -39,10 +40,16 @@ def configuration(environ):
         raise ValueError(f"TX_INTERVAL_US={us} infeasible: minimum {minimum} us "
                          "(packet airtime + 20 us handoff budget), or 0 for max mode")
     values.update(TX_INTERVAL_US=us, TX_INTERVAL_MS=us // 1000)
+    if image_mode:
+        if values["APP_PAYLOAD_SIZE"] != 240 or values["TX_PACKET_COUNT"] != 434 or us > 3000:
+            raise ValueError("Image mode requires payload 240, packet count 434 and interval <= 3000 us")
+        values["IMAGE_MODE"] = 1
     return values
 
 def metadata(values):
-    return {**{field: values[name] for name, field in FIELDS.items()}, "tx_power_dbm": 0}
+    result = {**{field: values[name] for name, field in FIELDS.items()}, "tx_power_dbm": 0}
+    if values.get("IMAGE_MODE"): result["mode"] = "image"
+    return result
 
 def write_config(path, environ, invalidate=False):
     values = configuration(environ)

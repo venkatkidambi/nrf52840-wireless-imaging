@@ -34,11 +34,12 @@ def require(condition, message):
 
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("benchmark", "image"), default="benchmark")
     parser.add_argument("frequency", nargs="?", help="Legacy frequency MHz")
     parser.add_argument("interval", nargs="?", help="Legacy interval in milliseconds")
     parser.add_argument("count", nargs="?", help="Legacy bounded packet count")
     parser.add_argument("--frequency", dest="frequency_option")
-    parser.add_argument("--payload", default="32", help="Application bytes, 32..247")
+    parser.add_argument("--payload", help="Application bytes, 32..247; image mode uses 240")
     schedule = parser.add_mutually_exclusive_group()
     schedule.add_argument("--interval-us", help="START interval in microseconds")
     schedule.add_argument("--max-throughput", action="store_true")
@@ -50,7 +51,12 @@ def arguments(argv=None):
         if args.interval and (args.interval_us is not None or args.max_throughput):
             raise ValueError("Do not mix legacy milliseconds with microsecond/max scheduling")
         env = {"RADIO_FREQ_MHZ": args.frequency_option or args.frequency or "2440",
-               "APP_PAYLOAD_SIZE": args.payload, "TX_PACKET_COUNT": args.packets or args.count or "10000"}
+               "APP_PAYLOAD_SIZE": args.payload or ("240" if args.mode == "image" else "32"),
+               "TX_PACKET_COUNT": args.packets or args.count or ("434" if args.mode == "image" else "10000")}
+        if args.mode == "image":
+            env["IMAGE_MODE"] = "1"
+            if not args.interval and args.interval_us is None and not args.max_throughput:
+                env["TX_INTERVAL_US"] = "1500"
         if args.interval: env["TX_INTERVAL_MS"] = args.interval
         if args.interval_us is not None: env["TX_INTERVAL_US"] = args.interval_us
         if args.max_throughput: env["TX_INTERVAL_US"] = "0"
@@ -287,6 +293,7 @@ class Runner:
                     if name != "TX_INTERVAL_MS"]
         # Override legacy environment settings so sub-ms builds are unambiguous.
         settings.append("TX_INTERVAL_MS=")
+        settings.append(f"IMAGE_MODE={int(self.config.get('mode') == 'image')}")
         self.command(["make", "build", *settings], timeout=600)
         manifests = {}
         for role in ("rx", "tx"):
@@ -328,6 +335,9 @@ class Runner:
             time.sleep(0.1)
         raise RunError("RX readiness timeout: no complete valid status report; TX was not flashed")
 
+    def start_capture(self, port):
+        return Capture(port, self.folder)
+
     def collect(self, start):
         completion = Completion(self.config, start)
         completion.previous = self.last
@@ -365,7 +375,7 @@ class Runner:
         write_json(mapping_path, mapping)
         metadata["rx_application"] = asdict(device)
         write_json(self.folder / "config.json", metadata)
-        self.capture = Capture(device.path, self.folder)
+        self.capture = self.start_capture(device.path)
         self.ready()
         # Verify TX still has the same attachment, then require another fresh,
         # clean RX report immediately before the copy. No user delay remains.
@@ -374,6 +384,7 @@ class Runner:
         print("RX ready with matching configuration and zero packets. Flashing TX...", flush=True)
         metadata["tx_flash_started"] = datetime.now(timezone.utc).isoformat()
         write_json(self.folder / "config.json", metadata)
+        self.tx_flash_monotonic = time.monotonic()
         self.flash("tx", boards["tx"])
         start = time.monotonic()
         metadata["tx_copy_returned"] = datetime.now(timezone.utc).isoformat()
@@ -443,6 +454,67 @@ class Runner:
             print(f"UF2 copy status: {self.copy_status}; inspect runner.log. No successful-copy claim is made.")
         print(f"Results: {self.folder}")
 
+class ImageRunner(Runner):
+    def start_capture(self, port):
+        from image_capture import ImageCapture
+        return ImageCapture(port, self.folder, self.config["run_tag"])
+
+    def ready(self, timeout=20):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            rows = self.capture.rows()
+            for row in rows:
+                require(row.get("event") == "ready", "RX image already started before TX flashing")
+                require(all(row.get(k) == v for k, v in self.config.items()), "RX image configuration mismatch")
+                require(row.get("radio_ready") == 1 and not any(row.get(k, 1) for k in
+                        ("active", "crc_errors", "invalid", "queue_drops", "usb_errors")),
+                        "RX image startup is not clean/ready")
+                self.last = row
+            if rows: return
+            time.sleep(0.1)
+        raise RunError("RX image readiness timeout; TX was not flashed")
+
+    def collect(self, start):
+        deadline = start + 90
+        while time.monotonic() < deadline:
+            for row in self.capture.rows():
+                self.last = row
+            path = self.folder / "image.json"
+            if path.exists():
+                result = json.loads(path.read_text())
+                require(result.get("status") == "pass", result.get("error", "Image verification failed"))
+                require(result.get("frame_id") == self.config["run_tag"], "Host image frame mismatch")
+                if hasattr(self, "tx_flash_monotonic"):
+                    result["host_launch_to_delivery_seconds"] = result["host_completed_monotonic"] - self.tx_flash_monotonic
+                    result["host_launch_timing_basis"] = "Host TX flash invocation to verified RESULT; includes UF2 copy, boot, generation, RF, USB and verification"
+                    write_json(path, result)
+                return "complete_reported"
+            time.sleep(0.1)
+        return "timed_out"
+
+    def finish(self, status, error=None):
+        if self.capture: self.capture.close()
+        path = self.folder / "image.json"
+        result = json.loads(path.read_text()) if path.exists() else None
+        summary = {"status": status, "error": error, "mode": "image", "image": result,
+                   "copy_status": self.copy_status, "collection_status": self.collection_status,
+                   "final_diagnostics": self.last, "finished_at": datetime.now(timezone.utc).isoformat()}
+        write_json(self.folder / "summary.json", summary)
+        flat = {"status": status, "mode": "image", **self.config}
+        if result and result.get("status") == "pass":
+            flat.update(result["measurements"], host_delivery_seconds=result["host_delivery_seconds"],
+                        reliable_radio_mbps=result["reliable_radio_mbps"], host_effective_mbps=result["host_effective_mbps"],
+                        host_usb_receive_seconds=result.get("host_usb_receive_seconds"),
+                        host_launch_to_delivery_seconds=result.get("host_launch_to_delivery_seconds"))
+            flat["status"] = status
+        with (self.folder / "summary.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(flat)); writer.writeheader(); writer.writerow(flat)
+        label = "PASS: all 102400 image bytes independently verified" if status == "complete_reported" else f"Image experiment {status}"
+        print(f"{label}\nResults: {self.folder}")
+        if error: print(error, file=sys.stderr)
+        if "unconfirmed" in self.copy_status.values():
+            print(f"UF2 copy status: {self.copy_status}; no successful-copy claim is made.")
+
 def interrupted(signum, frame):
     raise KeyboardInterrupt
 
@@ -463,7 +535,7 @@ def main(argv=None):
         folder = experiments / f"{name}_{config['freq_mhz']}MHz_{config['payload_bytes']}B_{config['tx_interval_us']}us_{config['packet_target']}"
         folder.mkdir()
         write_json(folder / "config.json", {**config, "timestamp": datetime.now(timezone.utc).isoformat()})
-        runner = Runner(config, folder)
+        runner = (ImageRunner if config.get("mode") == "image" else Runner)(config, folder)
         status, error = "failed", None
         try:
             status = runner.run()

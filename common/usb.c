@@ -72,6 +72,15 @@ void usb_task(void)
 
 bool usb_connected(void) { return !failed && tud_cdc_connected(); }
 
+uint32_t usb_write_bytes(const uint8_t *bytes, uint32_t count)
+{
+    if (!usb_connected()) return 0;
+    uint32_t written = tud_cdc_write(bytes, count);
+    tud_cdc_write_flush();
+    return written;
+}
+void usb_clear_output(void) { tud_cdc_write_clear(); }
+
 bool usb_write_line(const char *line)
 {
     size_t n = strlen(line);

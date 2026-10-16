@@ -9,7 +9,8 @@ RADIO_FREQ_MHZ ?= 2440
 TX_PACKET_COUNT ?= 10000
 APP_PAYLOAD_SIZE ?= 32
 RUN_ID ?= 1
-export RADIO_FREQ_MHZ TX_INTERVAL_MS TX_INTERVAL_US TX_PACKET_COUNT APP_PAYLOAD_SIZE RUN_ID
+IMAGE_MODE ?= 0
+export RADIO_FREQ_MHZ TX_INTERVAL_MS TX_INTERVAL_US TX_PACKET_COUNT APP_PAYLOAD_SIZE RUN_ID IMAGE_MODE
 NRFX := deps/nrfx-2.11.0
 CMSIS := deps/CMSIS_5-5.9.0
 TUSB := deps/tinyusb-0.17.0/src
@@ -22,11 +23,12 @@ CFLAGS := $(ARCH) -std=c11 -Os -g3 -ffunction-sections -fdata-sections \
 LDFLAGS := $(ARCH) -nostartfiles -nostdlib -Tplatform/linker.ld \
  -Wl,--gc-sections,--build-id=none,--fatal-warnings
 COMMON := platform/startup.c platform/system.c common/clock.c common/radio.c common/radio_timing.c common/protocol.c common/experiment_identity.c
+COMMON += common/image_protocol.c common/image_radio.c
 USB := common/usb.c platform/usb_descriptors.c $(TUSB)/tusb.c \
  $(TUSB)/common/tusb_fifo.c $(TUSB)/device/usbd.c $(TUSB)/device/usbd_control.c \
  $(TUSB)/class/cdc/cdc_device.c
-TX_OBJS := $(addprefix build/tx/,$(COMMON:.c=.o) tx/main.o)
-RX_OBJS := $(addprefix build/rx/,$(COMMON:.c=.o) $(USB:.c=.o) rx/main.o) build/rx/dcd_nrf5x.o
+TX_OBJS := $(addprefix build/tx/,$(COMMON:.c=.o) tx/main.o tx/image.o)
+RX_OBJS := $(addprefix build/rx/,$(COMMON:.c=.o) $(USB:.c=.o) rx/main.o rx/image.o common/image_usb.o) build/rx/dcd_nrf5x.o
 
 .PHONY: build tx rx deps check-tools clean flash-tx flash-rx monitor-rx test FORCE
 build: tx rx
@@ -87,6 +89,12 @@ test:
 	./build/test_measure
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon common/clock.c tests/test_clock.c -o build/test_clock
 	./build/test_clock
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon common/image_protocol.c tests/test_image_protocol.c -o build/test_image_protocol
+	./build/test_image_protocol
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon -DIMAGE_MODE=1 -DAPP_PAYLOAD_SIZE=240 -DTX_PACKET_COUNT=434 -DTX_INTERVAL_US=1500 common/image_protocol.c common/image_usb.c tests/test_image_usb.c -o build/test_image_usb
+	./build/test_image_usb build/test_image_stream.bin
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon -DIMAGE_MODE=1 -DAPP_PAYLOAD_SIZE=240 -DTX_PACKET_COUNT=434 -DTX_INTERVAL_US=1500 common/image_protocol.c common/image_radio.c tests/test_image_radio.c -o build/test_image_radio
+	./build/test_image_radio
 	$(PYTHON) -m unittest discover -s tests -v
 clean:
 	rm -rf build

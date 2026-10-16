@@ -29,6 +29,7 @@ extern unsigned test_ipsr, test_irq_enabled, test_irq_pending, test_irq_priority
 #define TIMER1_IRQn 9u
 static inline unsigned __get_IPSR(void) { return test_ipsr; }
 static inline void __DSB(void) {}
+static inline void __DMB(void) {}
 void NVIC_DisableIRQ(unsigned irq);
 void NVIC_EnableIRQ(unsigned irq);
 void NVIC_ClearPendingIRQ(unsigned irq);

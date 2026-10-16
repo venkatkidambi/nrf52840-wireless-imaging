@@ -1,4 +1,19 @@
-# Milestone 2 experiment procedure
+# Experiment procedures
+
+For Milestone 3, use the [reliable image-transfer procedure](image-transfer.md):
+
+```sh
+./scripts/run_experiment.sh --mode image --frequency 2440
+```
+
+Image mode uses the same board identification, preflight and RX-first flash flow.
+Its binary records, selective recovery and timing definitions are separate from
+the unidirectional benchmark below. Previously supplied M2 hardware results
+(32 B / 1000 µs: 0.246 Mbps, 4.08% missing; 240 B / 1500 µs: 1.176 Mbps,
+8.15%; 240 B / 1044 µs: 1.622 Mbps, 11.08%) are context only. They do not predict
+bidirectional image loss or demonstrate reliable frame latency.
+
+## Milestone 2 benchmark procedure
 
 This section describes current firmware. The M1 procedure is retained below as
 historical context and does not describe the M2 packet format or timing paths.

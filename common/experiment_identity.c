@@ -6,6 +6,11 @@ const struct {
     char magic[16];
     uint32_t frequency, interval_ms, target, power, payload, interval_us, run_id;
 } experiment_identity = {
-    "IMAGING-CONFIG2", RADIO_FREQ_MHZ, TX_INTERVAL_MS,
+#if IMAGE_MODE
+    "IMAGING-CONFIG3",
+#else
+    "IMAGING-CONFIG2",
+#endif
+    RADIO_FREQ_MHZ, TX_INTERVAL_MS,
     TX_PACKET_COUNT, RADIO_POWER_DBM, APP_PAYLOAD_SIZE, TX_INTERVAL_US, RUN_ID
 };

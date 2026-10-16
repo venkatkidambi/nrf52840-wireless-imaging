@@ -1,5 +1,70 @@
 # Validation results
 
+## Milestone 3 — 2026-10-16 (software validation only)
+
+Implemented a separate image-mode protocol, selective half-duplex recovery,
+102400-byte framebuffers on both roles, CRC32 verification, framed CDC output,
+standard-library host verifier/PGM writer, and an image-mode extension to the
+existing runner. No physical board was flashed, no serial port was opened,
+and no M3 RF or USB hardware timing was measured during implementation.
+
+The complete existing suite and new native/host tests pass: **85 Python tests**,
+benchmark protocol tests at five payload sizes, timing and clock tests, and three
+new native image executables. Native tests execute the production TX/RX protocol,
+radio adapter with a fake driver, and USB writer with short/zero writes. They cover
+serialization golden bytes, CRC golden vector, exact final partial segment,
+reverse ordering, duplicates, frame/index/length bounds, conflicting START,
+selective recovery across multiple rounds, lost START/END requests and feedback,
+lost COMPLETE and COMMIT acknowledgments, permanent loss and retry exhaustion,
+checksum mismatch, timer wrap, SPSC queue ownership/overflow, and reconnect replay.
+Python tests decode the C-generated stream, independently compare every pixel,
+exercise fragmented/malformed/truncated USB records and completion failures,
+check mode/configuration isolation, and verify the same mocked RX-first workflow.
+
+Paired ARM GCC builds (warnings as errors) and linked symbol audits passed:
+
+| Mode | Payload setting | Interval µs | TX flash | RX flash | TX static RAM | RX static RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Benchmark | 32 | 1000 | 4316 | 17420 | 428 | 9668 |
+| Benchmark | 240 | 1500 | 4320 | 17420 | 1260 | 10084 |
+| Benchmark | 247 | 0 (max) | 4160 | 17420 | 1292 | 10100 |
+| Image | 240 (236 pixels) | 0 (max) | 6176 | 15244 | 105452 | 111272 |
+| Image | 240 (236 pixels) | 1500 | 6204 | 15276 | 105456 | 111276 |
+
+Final build artifacts are image mode / 2440 MHz / 1500 µs / run tag 1. All artifacts
+pass ELF/BIN/UF2 vector, load-region, role, hash, and stack-reservation checks.
+Image TX ends at flash 0x2883c and RX at 0x2abac, below 0xea000. Each still reserves
+an additional 8192-byte stack. RX has 109908 bytes of application SRAM remaining
+after static data and stack reservation. Exact build manifests and logs are saved
+locally in `build/m3-build-audit.json` and `build/m3-build-*.log`.
+
+ELF tests verify both 102400-byte framebuffers, aligned DMA buffers and two-slot
+strides, SRAM placement below 0x2003e000, initial stack at 0x20040000, and absence
+of heap/camera symbols. Benchmark images contain no image framebuffer or transport
+state machine. These are placement checks, not measured stack high-water marks.
+The actual radio driver and TIMER/PPI implementation are unchanged.
+
+The native protocol/state-machine suite also passes AddressSanitizer and
+UndefinedBehaviorSanitizer. Python syntax compilation, shell syntax, and
+`git diff --check` pass. These checks do not open hardware devices.
+
+A source comparison against the pre-change revision confirmed byte-for-byte
+preservation of `flash.py`, `usb_identity.py`, the shell runner, radio/timing driver,
+and linker script. AST comparisons confirmed unchanged `identify`, `select_boards`,
+`wait_for_rx`, and `Runner.flash`. Original CLI/safety tests remain enabled, including
+uncertain UF2 copies and no retry. No mounts or hardware discovery were queried.
+
+Hardware work remains the first operator-run command below, repeated RF-loss
+trials, measured turnaround/guard margin, USB backpressure/disconnect tests, and
+actual reliable throughput. The default initial burst already exceeds the
+450–600 ms aspiration before recovery; no performance achievement is claimed.
+
+```sh
+./scripts/run_experiment.sh --mode image --frequency 2440
+```
+
+See [protocol, measurements, RAM ownership and first-run instructions](image-transfer.md).
+
 ## RX enumeration failure and wakeup correction — 2026-10-16
 
 Operator run `experiments/2026-10-16_003021_324381-0400_2440MHz_32B_1000us_10000/`

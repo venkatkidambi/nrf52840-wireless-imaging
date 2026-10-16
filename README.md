@@ -1,4 +1,23 @@
-# nRF52840 Wireless Imaging — Milestone 2
+# nRF52840 Wireless Imaging — Milestone 3
+
+Reliable image mode now transfers and verifies a complete **102400-byte, 320 × 320
+grayscale image**, with selective retransmission, frame CRC32, binary USB CDC,
+independent host pixel comparison, and PGM output. The existing benchmark and
+dual-board flashing workflow remain available unchanged.
+
+First operator-run image experiment (connect and double-reset both boards first):
+
+```sh
+./scripts/run_experiment.sh --mode image --frequency 2440
+```
+
+The runner uses the existing identity/preflight/`FLASH` procedure and flashes RX
+before TX. See [image protocol, timing, memory, output files and failure handling](docs/image-transfer.md).
+Image firmware is compiled and software-tested; **no M3 physical transfer or
+450–600 ms performance claim has been validated**. No boards were flashed during
+implementation. The following benchmark documentation continues to describe M2 mode.
+
+## Preserved benchmark mode
 
 Bare-metal C11 synthetic throughput benchmark for two Seeed XIAO nRF52840 boards.
 The shared proprietary 2 Mbps RADIO driver uses EasyDMA, hardware CRC16,

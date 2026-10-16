@@ -1,6 +1,15 @@
 #ifndef IMAGING_EXPERIMENT_H
 #define IMAGING_EXPERIMENT_H
 #include <stdint.h>
+#ifndef IMAGE_MODE
+#define IMAGE_MODE 0
+#endif
+#if IMAGE_MODE != 0 && IMAGE_MODE != 1
+#error "IMAGE_MODE must be 0 or 1"
+#endif
+#if IMAGE_MODE && (APP_PAYLOAD_SIZE != 240 || TX_PACKET_COUNT != 434 || TX_INTERVAL_US > 3000)
+#error "Image mode requires payload 240, packet count 434 and interval <= 3000 us"
+#endif
 #ifndef RADIO_FREQ_MHZ
 #define RADIO_FREQ_MHZ 2440
 #endif

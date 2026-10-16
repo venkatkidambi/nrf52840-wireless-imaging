@@ -1,143 +1,78 @@
-# nRF52840 Wireless Imaging — Milestone 4.1
+# nRF52840 Wireless Imaging
 
-Reliable image mode now transfers and verifies a complete **102400-byte, 320 × 320
-grayscale image**, with selective retransmission, frame CRC32, binary USB CDC,
-independent host pixel comparison, and PGM output. The existing benchmark and
-dual-board flashing workflow remain available unchanged.
+Send a grayscale image wirelessly between two small microcontrollers, then save
+and verify it on a computer. The project uses **bare-metal C**: firmware controls
+the hardware directly, without an RTOS (operating system) or BLE stack.
 
-First operator-run image experiment (connect and double-reset both boards first):
+**Hardware:** Two Seeed XIAO nRF52840 boards, one transmitter (**TX**) and one
+receiver (**RX**), with USB connections for programming and receiving the image.
 
-```sh
-./scripts/run_experiment.sh --mode image --frequency 2440 --interval-us 1100 --control-profile baseline
+**Current status:** Reliable image transfer is implemented through Milestone 4.1.
+The image is currently generated in software. Actual **HM01B0 camera acquisition
+is planned for Milestone 5**.
+
+## Bare-Metal Wireless Communication Protocol
+
+### 5-Step Communication Workflow
+
+1. **Image acquisition:** TX stores a 320 × 320 grayscale image in SRAM (working
+   memory). At one byte per pixel, the image occupies 102,400 bytes, or 102.4 KB.
+   The current demo uses a synthetic test image.
+2. **Packetization:** TX divides the image into **434 data packets**, each carrying
+   up to **236 image bytes**, plus protocol metadata that identifies the frame
+   and packet.
+3. **Wireless transmission:** The nRF52840 RADIO peripheral sends packets at
+   **2 Mbps** in the **2.4 GHz** band. Hardware timers and PPI (hardware event
+   connections) schedule transmissions; EasyDMA moves packet data between memory
+   and the radio.
+4. **Error recovery:** RX tracks missing packets and asks TX to resend only those
+   packets. This selective retransmission uses half-duplex feedback: the boards
+   take turns sending and listening.
+5. **Verification and USB transfer:** RX reassembles the image, checks its
+   **CRC32 checksum** for corruption, and sends it to the computer over **USB CDC**
+   (a USB serial connection). The computer checks the checksum and compares every
+   pixel with the expected test image before saving it.
+
+```mermaid
+flowchart TD
+    TX["TX nRF52840: Image buffer → Packetization → RADIO"]
+    RX["RX nRF52840: RADIO → Reassembly → CRC32 → USB"]
+    PC["Computer: Receive and verify complete grayscale image"]
+    TX -->|2 Mbps wireless image data| RX
+    RX -.->|Retransmission feedback| TX
+    RX -->|USB CDC| PC
 ```
 
-The runner uses the existing identity/preflight/`FLASH` procedure and flashes RX
-before TX. See [image protocol, timing, memory, output files and failure handling](docs/image-transfer.md).
-Verified 1100 µs trials completed full images in 534,552 and 553,877 µs. These
-are individual successes, not a latency distribution. M4.1 adds control-phase
-instrumentation and opt-in `balanced` / `aggressive` guards; `baseline` preserves
-3 ms guards and existing retry windows. The no-option image CLI still defaults
-to 1500 µs for compatibility; 1100 µs is preferred and 1500 µs remains the fallback.
-**This revision's reduced guards await physical validation.** No boards were
-flashed during implementation.
+**Why bare metal?** Direct control of radio registers, hardware timers, DMA
+buffers, and memory enables deterministic packet scheduling with minimal
+software overhead.
 
-See the [control audit](docs/control-audit.md) and
-[freeze candidate, telemetry, validation results and hardware gate](docs/radio-freeze.md).
-The recommended tag is `radio-image-v1.0`, only after physical validation.
-The following benchmark documentation continues to describe M2 mode.
+### Measured Performance
 
-## Preserved benchmark mode
+| Metric | Result |
+| --- | --- |
+| Reliable wireless image transfer | ~535–555 ms in successful low-retry runs |
+| Image integrity | 100% of pixels verified in those successful runs, plus CRC32 |
+| TX packet spacing | 1,100 µs configured interval |
+| Radio frequency | 2440 MHz |
+| Error recovery and integrity checking | Selective retransmission + CRC32 |
 
-Bare-metal C11 synthetic throughput benchmark for two Seeed XIAO nRF52840 boards.
-The shared proprietary 2 Mbps RADIO driver uses EasyDMA, hardware CRC16,
-interrupt-driven double-buffered RX, and TIMER/PPI TX scheduling. Native USB CDC
-on RX reports cumulative diagnostics once per second. TX sends three final
-telemetry pages so RX can report measured TX timing without adding USB to TX.
-No application packet or telemetry page is retransmitted; there are no ACKs.
+The recorded successful wireless transfer times were **534.552 ms** and
+**553.877 ms**. These are individual results, not a guaranteed timing range or
+an overall success rate. Wireless timing excludes image generation and USB
+transfer. The radio's 2 Mbps rate includes protocol overhead; it is not the
+image delivery rate.
 
-**Default: 2440 MHz, 0 dBm, 32 application bytes, 10,000 packets, 10 ms interval.**
-M2 firmware has been compiled and host-tested; its throughput and reduced RX
-turnaround have **not been measured on hardware**. No boards were flashed during
-implementation. The 450–600 ms image target remains an experiment question.
+The baseline control profile is the starting point. Reduced-guard `balanced`
+and `aggressive` profiles still require physical validation; see the
+[validation guide](docs/radio-freeze.md).
 
-See [experiment procedure, timing definitions, and state-machine rationale](docs/experiments.md)
-and [software validation and remaining hardware checks](docs/validation.md).
-No Arduino runtime, RTOS, BLE/SoftDevice API, heap allocation, or camera/pin
-access is included. Existing bootloader, SoftDevice, and flash-layout checks remain.
+## Get Started
 
-## First high-speed experiment
+### 1. Build and test
 
-After inspecting the build results, connect both boards and double-reset both
-into UF2 mode. Close other serial monitors and run from an interactive terminal:
-
-```sh
-./scripts/run_experiment.sh --frequency 2440 --payload 32 --interval-us 1000 --packets 10000
-```
-
-The runner builds and validates matching images, identifies physical RX and TX,
-and asks for the existing `FLASH` confirmation. RX is flashed first; TX is
-flashed only after CDC enumeration and a fresh, clean report with matching
-configuration and run tag. Unique USB identities are used, never a remembered
-mount suffix. Ambiguous identification stops the operation. See the flash
-procedure below for the retained safety checks.
-
-Then explore a larger packet and maximum scheduling:
-
-```sh
-./scripts/run_experiment.sh --frequency 2440 --payload 240 --interval-us 1200 --packets 10000
-./scripts/run_experiment.sh --frequency 2440 --payload 240 --max-throughput --packets 10000
-```
-
-The legacy positional CLI remains: `./scripts/run_experiment.sh 2440 10 10000`
-means milliseconds. **Payload 240 / interval 500 us is impossible and rejected**:
-the packet alone occupies 1024 us on air.
-
-Results in `experiments/<timestamp>_<MHz>_<payload>B_<interval>us_<count>/` include
-configuration, frozen UF2s/manifests, raw USB output, per-report `rx.csv`, and
-`summary.json` / `summary.csv`. A fresh random 32-bit run tag binds both builds
-and on-air packets. TX statistics are valid only when `tx_stats_mask=7`; missing
-telemetry leaves measured TX goodput and delivery ratio unavailable, never
-replaced by configured values. Ctrl-C preserves partial evidence and reaps children.
-
-## Packet sizes and scheduling
-
-`APP_PAYLOAD_SIZE` is useful synthetic data, excluding the eight-byte header.
-The fixed format omits S0/LENGTH/S1. `PCNF1.MAXLEN=STATLEN=payload+8`, both limited
-to 255; maximum application data is therefore **247 bytes**. CRC, preamble and
-address are additional on-air bytes, not DMA bytes.
-
-| Application bytes | DMA bytes | On-air bytes | Airtime us | Minimum fixed interval us | Feasible requested matrix intervals us |
-| ---: | ---: | ---: | ---: | ---: | --- |
-| 32 | 40 | 48 | 192 | 212 | 250, 500, 1000, max |
-| 64 | 72 | 80 | 320 | 340 | 500, 1000, max |
-| 128 | 136 | 144 | 576 | 596 | 1000, max |
-| 240 | 248 | 256 | 1024 | 1044 | max |
-| 247 | 255 | 263 | 1052 | 1072 | max (extra boundary configuration) |
-
-All integer payloads 32–247 and fixed intervals from their minimum through
-60,000,000 us are accepted. The 20 us handoff allowance is an engineering admission
-budget, **not verified sustained performance**. Actual late schedules are counted
-and rebased; no catch-up burst occurs. Zero selects maximum mode. Neither 150 nor
-200 us fits a supported payload plus the admission allowance.
-
-```sh
-make build APP_PAYLOAD_SIZE=240 TX_INTERVAL_US=1200 RADIO_FREQ_MHZ=2440 TX_PACKET_COUNT=10000
-make build APP_PAYLOAD_SIZE=240 TX_INTERVAL_US=0
-make build RADIO_FREQ_MHZ=2440 TX_INTERVAL_MS=10  # legacy units
-make test
-```
-
-Do not set conflicting microsecond and millisecond values. Generated
-`tx_interval_ms` is only a compatibility field (integer division); use
-`tx_interval_us` for analysis. `RUN_ID=1` is the direct-build default; choose a new
-shared value for manually flashed runs. `TX_PACKET_COUNT=0` runs until the reserved
-telemetry sequence boundary (0xfffffff0), then stops instead of wrapping. The
-runner requires a positive bounded count. M2 packets/metadata are incompatible
-with M1 firmware; rebuild and flash both roles together.
-
-## Matrix without hardware writes
-
-```sh
-# Save admission decisions and commands only:
-python3 scripts/benchmark_matrix.py --output experiments/m2-plan
-# Compile all 10 feasible matrix entries, reject the other 14; never flash:
-python3 scripts/benchmark_matrix.py --build --output build/m2-matrix-new
-# Explicit operator-run matrix; normal FLASH/identity checks for each entry:
-python3 scripts/benchmark_matrix.py --run --output experiments/m2-hardware
-```
-
-Output directories must be new. `--payloads`, `--intervals-us` (0=max),
-`--frequency`, and `--packets` customize the matrix. `matrix.json` and `matrix.csv`
-are saved after each entry. Hardware mode asks the operator to double-reset both
-boards between entries; this firmware intentionally has no remote bootloader reset.
-Use separate output directories for repeated trials. Builds share `build/` and
-must be sequential, including direct Make invocations.
-
-## Build on macOS
-
-Requirements: Make, a host C compiler for tests, Python **3.12+**, and an ARM GCC
-toolchain with binutils and newlib. The full Arm toolchain is available via the
-[Homebrew gcc-arm-embedded cask](https://formulae.brew.sh/cask/gcc-arm-embedded):
+On macOS, install Make and a host C compiler (through Xcode Command Line Tools),
+Python **3.12+**, and an ARM GCC toolchain with binutils and newlib:
 
 ```sh
 xcode-select --install                 # If command-line tools are missing
@@ -147,148 +82,74 @@ make build
 make test
 ```
 
-`make` prefers `arm-none-eabi-gcc` on PATH. On this machine it also detects the
-existing Teensy ARM GCC installation under `~/Library/Arduino15/packages/teensy/`.
-Only the compiler, binutils, libc memory/string routines, and compiler support
-library are used from that installation; no Teensy or Arduino firmware is linked.
-To select a toolchain explicitly:
+The first build downloads pinned, SHA-256-verified TinyUSB, Nordic nrfx/MDK,
+and ARM CMSIS dependencies. Later builds can run offline. `make build` builds
+the default benchmark firmware; the image experiment below builds matching
+image firmware automatically. Building and testing do not flash either board.
+
+If needed, select a toolchain with
+`make build CROSS_COMPILE=/absolute/path/to/bin/arm-none-eabi-`.
+Run `make clean` when changing compilers or compiler flags.
+
+### 2. Run an image transfer
+
+Connect both boards by USB, double-press each board's reset button to enter UF2
+bootloader mode, and close other serial monitors. Run this from an interactive
+terminal in the repository:
 
 ```sh
-make build CROSS_COMPILE=/absolute/path/to/bin/arm-none-eabi-
+./scripts/run_experiment.sh --mode image --frequency 2440 --interval-us 1100 --control-profile baseline
 ```
 
-Run `make clean` when changing compiler or compiler flags. CPU flags are
-`-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard`, with C11, `-Os`,
-section garbage collection, debug symbols, and warnings treated as errors.
-The vector initializer uses GCC's designated range extension to C11.
+The runner builds the firmware, helps identify the physical RX and TX boards,
+checks their flash layouts, and asks you to type `FLASH`. It programs RX first
+and waits for it to be ready before programming TX. Identify boards through the
+runner: USB mount names can change after reconnection.
 
-The first build downloads SHA-256-verified release archives into `.cache/` and
-extracts them into `deps/`. Subsequent builds work offline. No pip packages or
-git submodules are required. `make deps` can fetch dependencies separately.
+Use `--interval-us 1500` as a conservative fallback. Omitting the interval also
+uses 1500 µs with the baseline profile. Reset both boards before another run;
+each run transfers one image.
 
-| Dependency | Pin | Used for |
-| --- | --- | --- |
-| [TinyUSB](https://github.com/hathach/tinyusb/tree/0.17.0) | 0.17.0 | CDC ACM, USB device core, nRF5x peripheral driver |
-| [Nordic nrfx/MDK](https://github.com/NordicSemiconductor/nrfx/tree/v2.11.0) | v2.11.0 | Register definitions, system errata, inline USB clock/errata helpers |
-| [ARM CMSIS](https://github.com/ARM-software/CMSIS_5/tree/5.9.0) | 5.9.0 | Cortex-M4 core definitions and intrinsics |
+### 3. Find the image and results
 
-Archive hashes and URLs are in `scripts/deps.py`. Upstream licenses remain in
-the extracted dependencies: TinyUSB MIT, Nordic BSD-3-Clause, CMSIS Apache-2.0
-and component notices. The bundled newlib/libgcc licenses come with the selected
-toolchain. No nrfx peripheral driver implementation or board support package is
-linked. `platform/system.c` uses Nordic's revision-gated SystemInit with optional
-UICR-writing and GPIO/trace options forbidden.
+Results are saved in a timestamped directory under `experiments/`, including:
 
-`scripts/prepare_usb.py` produces a local copy of the pinned TinyUSB nRF5x driver
-in `build/`: it leaves HFXO running on USB detach because RADIO owns the clock,
-and bounds the port's two hardware startup waits. The dependency tree is not
-edited. USB VBUS detection, regulator readiness, pull-up sequencing, NVIC setup,
-device descriptors, FICR-based serial number, and USBD interrupt handler are all
-integrated explicitly. USB uses TinyUSB's example VID/PID `CAFE:4001` for local
-development; allocate an appropriate identity before distributing a product.
+- **`image.pgm`** — the verified grayscale image, saved only after all checks pass.
+- **`image.json` / `image.csv`** — image integrity and timing results.
+- **`summary.json` / `summary.csv`** — the overall experiment outcome.
+- **Logs, raw USB capture, and firmware files** — evidence for troubleshooting
+  and reproducing the run.
 
-Available targets:
+See the [image transfer guide](docs/image-transfer.md) for standalone reception,
+recovery behavior, and detailed timing definitions.
+
+## Benchmark Mode
+
+The separate benchmark mode measures a synthetic packet stream without image
+reassembly or retransmission:
 
 ```sh
-make build        # Both roles
-make tx
-make rx
-make test         # Protocol/timing + configuration/CSV/image/flashing tests
-make clean        # Deletes build/ only; retains dependencies and archive cache
+./scripts/run_experiment.sh --frequency 2440 --payload 240 --interval-us 1200 --packets 10000
 ```
 
-Configuration changes regenerate `build/experiment_config.h` and invalidate
-role objects/images, including on Make versions with coarse mtime resolution.
-Outputs remain `build/{tx,rx}.{elf,bin,uf2,map}` and `.uf2.json` manifests.
-Each image is checked against ELF/vector/flash/RAM limits; role, SHA-256 and
-embedded M2 configuration are verified again before flashing.
+See the [experiment guide](docs/experiments.md) for packet sizes, scheduling,
+benchmark matrices, and telemetry.
 
-## Flash layout and boot
+## Project Guide
 
-The application occupies **`[0x27000, 0xEA000)`**. This was verified from each
-connected board's read-only `CURRENT.UF2`, including the installed SoftDevice's
-size/version structure, and cross-checked against the upstream bootloader.
-It is not inferred solely from a generic S140 version table.
+| Location | Contents |
+| --- | --- |
+| `tx/` and `rx/` | Transmitter and receiver firmware |
+| `common/` | Shared radio, image protocol, timing, and USB code |
+| `platform/` | Startup, memory layout, and USB descriptors |
+| `scripts/` | Build support, flashing, experiments, and image reception |
+| `tests/` | Host tests for protocol, timing, USB, and tooling |
+| [Image transfer](docs/image-transfer.md) | Packet format, recovery, USB framing, and memory use |
+| [Performance audit](docs/performance.md) | Timing analysis and optimization history |
+| [Control timing audit](docs/control-audit.md) | Feedback timing and guard intervals |
+| [Milestone 4.1 validation](docs/radio-freeze.md) | Experimental profiles and required hardware checks |
+| [Validation history](docs/validation.md) | Software checks and hardware validation limits |
+| [Flash layout](docs/layout.md) | Memory map and preserved bootloader/SoftDevice regions |
 
-See [the flash-layout evidence and memory map](docs/layout.md) for source links,
-the observed metadata, preserved regions, and why the first 32 KiB of SRAM is
-reserved. The linker leaves 8 KiB at the top of SRAM for the stack. Startup copies
-`.data`, clears `.bss`, resets interrupt state, enables the FPU through Nordic
-SystemInit, and installs the application's vector table directly in `SCB->VTOR`.
-No SoftDevice API is called or enabled by the application.
-
-The flasher rechecks the selected board's layout on every run. A changed
-bootloader, SoftDevice, or exposed flash boundary disables flashing until the
-new configuration is audited. Do not bypass this by manually copying a different
-image or changing only the linker origin.
-
-## Identify and flash one board at a time
-
-Double-press reset to enter the existing UF2 bootloader. Discover mounts:
-
-```sh
-python3 scripts/flash.py --list
-```
-
-Identify the physical camera board as TX and the bare board as RX. If there is
-any uncertainty, disconnect one USB cable, list again, reconnect, and list again
-to establish the current mapping. **Reconnection can change either mount name.**
-Both boards share the same `Board-ID`; that field is a model check, not a unique
-identity. This project deliberately does not remember a role from a volume name.
-
-Use the mount you have just identified for each role. These commands deliberately
-require explicit mount variables and preserve exported experiment settings:
-
-```sh
-RX_VOLUME='/Volumes/REPLACE_WITH_CURRENT_RX_MOUNT'
-make flash-rx VOLUME="$RX_VOLUME" FLASH_FLAGS=--dry-run
-make flash-rx VOLUME="$RX_VOLUME"
-
-# List again and identify the camera board; mount names can change.
-python3 scripts/flash.py --list
-TX_VOLUME='/Volumes/REPLACE_WITH_CURRENT_TX_MOUNT'
-make flash-tx VOLUME="$TX_VOLUME" FLASH_FLAGS=--dry-run
-make flash-tx VOLUME="$TX_VOLUME"
-```
-
-Replace `VOLUME` whenever discovery shows a different mapping. Omitting it is
-an error, even if only one board is connected. The script prints the selected
-mount, board metadata, role, image, and allowed flash range before writing a
-single UF2 file to that mount. `--dry-run` performs no writes. No tool in this
-project erases the chip or writes UICR/SoftDevice/bootloader payloads. The existing
-bootloader itself performs its normal application-update bookkeeping.
-
-The volume should disappear after a successful bootloader update. TX then runs
-without a USB interface. RX enumerates as **nRF52840 Imaging RX**, with a serial
-number derived from its immutable FICR DEVICEID. A completed file copy alone
-does not prove firmware execution; follow the test below. The flasher reports
-the failing copy operation, acknowledged byte count, and current submitted span.
-Writes are limited to 512-byte UF2 blocks. EIO/ENODEV on the final submitted
-block, or during final sync/close after acknowledged writes, returns exit 3
-(copy unconfirmed). A failed syscall does not prove zero device delivery.
-The runner keeps collecting RX evidence, records the warning,
-and never turns an unconfirmed copy into a successful-copy claim. Other copy
-errors abort. No copy is automatically retried or redirected to another board.
-
-## Monitor and architecture
-
-```sh
-python3 scripts/monitor.py --list
-make monitor-rx PORT=/dev/cu.usbmodemYOUR_RX_PORT \
-  MONITOR_FLAGS='--csv new-run.csv --run-id my-run'
-```
-
-Use the identified RX port; baud 115200 is CDC line coding, not throughput.
-The firmware never prints individual packets or waits for a terminal. M2's
-logger requires the complete M2 schema; old logs remain historical evidence.
-Reports contain configured values, RX validation/loss counters, hardware timing,
-USB overlap counters, and final TX telemetry. Definitions are in the experiment
-procedure, including the difference between packet delivery and observed gaps.
-
-Shared code remains under `common/`, boot and USB descriptors under `platform/`,
-and role loops under `tx/` and `rx/`. RX validates the completed DMA buffer in the
-RADIO ISR after starting the alternate buffer. TX stages its next buffer while
-the current one is transmitting; the END ISR arms its one-shot TIMER/PPI start. RADIO stays in RXIDLE/TXIDLE between packets;
-it is disabled on recovery and at TX completion. TXIDLE can emit the configured
-DTX signal, so this benchmark trades continuous radio power/occupancy for speed.
-This is a USB-powered bench design, not a low-power duty-cycled link.
+The firmware does not enable or call the installed SoftDevice. The flashing
+tools preserve the existing bootloader and reserved flash regions.

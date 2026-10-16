@@ -4,6 +4,13 @@ Send a grayscale image wirelessly between two small microcontrollers, then save
 and verify it on a computer. The project uses **bare-metal C**: firmware controls
 the hardware directly, without an RTOS (operating system) or BLE stack.
 
+**Direct RADIO control with EasyDMA and TIMER + PPI:** Our firmware programs the
+nRF52840's radio registers directly. EasyDMA moves packet bytes between memory
+and the radio, while TIMER + PPI starts scheduled transmissions in hardware.
+Fast RX/TX ramp-up gets the radio ready quickly when switching to transmit or
+receive. The CPU prepares the packets; hardware handles their precise launch
+timing and radio data movement.
+
 **Measured efficiency: about 74–77% of the radio's theoretical 2 Mbps capacity
 delivers useful image data.** In two successful low-retry runs, a complete
 102.4 KB image crossed the wireless link in **535–554 ms**, equivalent to
@@ -61,6 +68,13 @@ The CPU still prepares and copies packet buffers, handles packet completion,
 schedules the next packet, tracks missing pieces, manages retransmissions, and
 calculates CRC32. These hardware features offload specific jobs; the full image
 transfer still needs the CPU.
+
+**PPI is enabled for scheduling; RADIO shortcuts are disabled (`SHORTS = 0`).**
+PPI connects a timer event directly to the radio's start task. Packet-completion
+interrupts let the CPU switch buffers safely before reception restarts or the
+next transmission is scheduled. This keeps an incoming packet from overwriting
+an unread buffer and prevents transmission from restarting without a prepared
+packet.
 
 - **Less waiting between packets.** The demonstrated setting sends a new packet
   every **1.1 ms**, down from the conservative 1.5 ms setting. Across 434 packets,

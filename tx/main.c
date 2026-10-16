@@ -26,14 +26,16 @@ int main(void)
     const uint32_t target = TX_PACKET_COUNT ? TX_PACKET_COUNT : PROTOCOL_DATA_LIMIT;
     unsigned active = 0;
     protocol_encode(packets[active].bytes, 0);
+    (void)radio_tx_submit(packets[active].bytes, false, 0);
     while (tx_attempts < target) {
-        bool scheduled = TX_INTERVAL_US && tx_attempts;
-        uint32_t deadline = prior.start + TX_INTERVAL_US;
-        bool on_time = radio_tx_submit(packets[active].bytes, scheduled, deadline);
-        if (scheduled && !on_time) ++missed;
         ++tx_attempts;
         /* Prepare only the OTHER SRAM buffer while RADIO owns active. */
-        if (tx_attempts < target) protocol_encode(packets[active ^ 1u].bytes, tx_attempts);
+        if (tx_attempts < target) {
+            protocol_encode(packets[active ^ 1u].bytes, tx_attempts);
+            if (!radio_tx_stage(packets[active ^ 1u].bytes, TX_INTERVAL_US)) {
+                ++tx_failures; break;
+            }
+        }
         if (!radio_tx_wait(&result)) {
             if (result.addressed) ++starts;
             ++tx_failures; break;
@@ -48,8 +50,9 @@ int main(void)
             /* ADDRESS marks the end of the fixed 1+5 byte preamble/address. */
             duration = (uint32_t)(result.end - result.address) + 24u;
         }
-        if (scheduled) {
-            int32_t late = (int32_t)(result.start - deadline);
+        if (result.scheduled) {
+            if (!result.on_time) ++missed;
+            int32_t late = (int32_t)(result.start - result.deadline);
             measurement_add(&delay, late > 0 ? (uint32_t)late : 0);
         }
         prior = result;

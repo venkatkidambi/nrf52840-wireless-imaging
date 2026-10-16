@@ -1,4 +1,4 @@
-# nRF52840 Wireless Imaging — Milestone 3
+# nRF52840 Wireless Imaging — Milestone 4
 
 Reliable image mode now transfers and verifies a complete **102400-byte, 320 × 320
 grayscale image**, with selective retransmission, frame CRC32, binary USB CDC,
@@ -13,9 +13,11 @@ First operator-run image experiment (connect and double-reset both boards first)
 
 The runner uses the existing identity/preflight/`FLASH` procedure and flashes RX
 before TX. See [image protocol, timing, memory, output files and failure handling](docs/image-transfer.md).
-Image firmware is compiled and software-tested; **no M3 physical transfer or
-450–600 ms performance claim has been validated**. No boards were flashed during
-implementation. The following benchmark documentation continues to describe M2 mode.
+The preserved M3 hardware run verified all pixels in 735,221 us reliable radio
+time at 1500 us spacing. M4 adds staged TX scheduling, byte-table CRC, faster
+pattern generation, USB header coalescing, and detailed telemetry. **M4 performance
+is not yet hardware-validated.** No boards were flashed during implementation.
+See the [performance audit, preserved baseline and validation procedure](docs/performance.md). The following benchmark documentation continues to describe M2 mode.
 
 ## Preserved benchmark mode
 
@@ -278,8 +280,8 @@ procedure, including the difference between packet delivery and observed gaps.
 
 Shared code remains under `common/`, boot and USB descriptors under `platform/`,
 and role loops under `tx/` and `rx/`. RX validates the completed DMA buffer in the
-RADIO ISR after starting the alternate buffer. TX prepares its next buffer while
-the current one is transmitting. RADIO stays in RXIDLE/TXIDLE between packets;
+RADIO ISR after starting the alternate buffer. TX stages its next buffer while
+the current one is transmitting; the END ISR arms its one-shot TIMER/PPI start. RADIO stays in RXIDLE/TXIDLE between packets;
 it is disabled on recovery and at TX completion. TXIDLE can emit the configured
 DTX signal, so this benchmark trades continuous radio power/occupancy for speed.
 This is a USB-powered bench design, not a low-power duty-cycled link.

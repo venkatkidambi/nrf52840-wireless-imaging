@@ -14,14 +14,19 @@ void image_usb_header(uint8_t out[IMAGE_USB_HEADER], uint8_t type, uint32_t fram
 #include "usb.h"
 #include "clock.h"
 #include "image_radio.h"
-static uint8_t header[IMAGE_USB_HEADER], body[IMAGE_STATS_WORDS * 4u];
+static uint8_t header[64], body[IMAGE_STATS_WORDS * 4u];
 static const uint8_t *payload;
-static uint32_t length, offset, last_ready, usb_start;
+static uint32_t length, offset, last_ready, usb_start, prefix_length;
 static uint8_t sending;
 static bool connected, start_sent, pixels_sent, result_sent;
 static void begin(uint8_t type, image_receiver_t *s, const uint8_t *p, uint32_t n)
 {
+    uint32_t began = time_us();
     image_usb_header(header, type, s->frame, p, n);
+    if (type == IMAGE_USB_PIXELS) s->stats[IM_USB_CRC_US] = time_us() - began;
+    uint32_t first = n < sizeof header - IMAGE_USB_HEADER ? n : sizeof header - IMAGE_USB_HEADER;
+    memcpy(header + IMAGE_USB_HEADER, p, first);
+    prefix_length = IMAGE_USB_HEADER + first;
     payload = p; length = n; offset = 0; sending = type;
 }
 void image_usb_task(image_receiver_t *s, bool radio_ready)
@@ -56,8 +61,9 @@ void image_usb_task(image_receiver_t *s, bool radio_ready)
         }
     }
     if (!sending) return;
-    if (offset < IMAGE_USB_HEADER) {
-        offset += usb_write_bytes(header + offset, IMAGE_USB_HEADER - offset);
+    if (offset < prefix_length) {
+        /* A full first USB packet avoids flushing a 24-byte short header. */
+        offset += usb_write_bytes(header + offset, prefix_length - offset);
     } else if (offset < IMAGE_USB_HEADER + length) {
         uint32_t pos = offset - IMAGE_USB_HEADER;
         uint32_t n = length - pos;

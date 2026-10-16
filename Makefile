@@ -87,6 +87,10 @@ test:
 	done
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon tests/test_measure.c -o build/test_measure
 	./build/test_measure
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/radio_fakes -Icommon -DAPP_PAYLOAD_SIZE=240 common/radio.c tests/test_radio.c -o build/test_radio
+	./build/test_radio
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/radio_fakes -Icommon common/radio_timing.c tests/test_radio_timing.c -o build/test_radio_timing
+	./build/test_radio_timing
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Itests/fakes -Icommon common/clock.c tests/test_clock.c -o build/test_clock
 	./build/test_clock
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icommon common/image_protocol.c tests/test_image_protocol.c -o build/test_image_protocol

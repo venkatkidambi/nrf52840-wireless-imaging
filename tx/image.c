@@ -15,13 +15,20 @@ static bool send(void *context, const uint8_t *wire)
 {
     (void)context;
     bool ok = image_radio_send(wire);
-    stats[IM_TX_TURN_MAX] = image_radio_turn_max;
+    image_radio_stats(stats);
     return ok;
 }
 static bool exchange(void *context, const uint8_t *wire, uint8_t *reply)
 {
     bool ok = image_radio_exchange(context, wire, reply);
-    stats[IM_TX_TURN_MAX] = image_radio_turn_max;
+    image_radio_stats(stats);
+    return ok;
+}
+static bool flush(void *context)
+{
+    (void)context;
+    bool ok = image_radio_flush();
+    image_radio_stats(stats);
     return ok;
 }
 int image_tx_main(void)
@@ -33,7 +40,7 @@ int image_tx_main(void)
     uint32_t start = radio_time();
     image_generate(framebuffer);
     stats[IM_GENERATION] = radio_time() - start;
-    image_link_t link = {NULL, now, send, exchange};
+    image_link_t link = {NULL, now, send, exchange, flush};
     tx_complete = image_transmit(&link, framebuffer, RUN_ID, stats);
     tx_failures = !tx_complete;
     (void)radio_disable();

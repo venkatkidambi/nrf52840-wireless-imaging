@@ -38,7 +38,7 @@ int main(int argc, char **argv)
     assert(used == 76); /* No drop when the host is not accepting bytes. */
     blocked = false;
     for (unsigned i = 0; i < 20000; ++i) image_usb_task(&s, true);
-    unsigned expected = 76 + 44 + 24 + IMAGE_BYTES + 24 + 96;
+    unsigned expected = 76 + 44 + 24 + IMAGE_BYTES + 24 + IMAGE_STATS_WORDS * 4;
     assert(used == expected);
     if (argc == 2) {
         FILE *file = fopen(argv[1], "wb"); assert(file);

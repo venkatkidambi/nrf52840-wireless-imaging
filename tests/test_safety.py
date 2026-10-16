@@ -219,19 +219,29 @@ class Safety(unittest.TestCase):
             sections = [struct.unpack_from("<10I", elf, header[5] + i * header[10])
                         for i in range(header[11])]
             symbols = {}
+            object_sizes = {}
             for section in sections:
                 if section[1] != 2: continue  # SHT_SYMTAB
                 names = sections[section[6]]
                 strings = elf[names[4]:names[4] + names[5]]
                 for offset in range(section[4], section[4] + section[5], section[9]):
-                    name, value, _, _, _, _ = struct.unpack_from("<IIIBBH", elf, offset)
-                    symbols[strings[name:].split(b"\0", 1)[0].decode()] = value
+                    name, value, size, _, _, _ = struct.unpack_from("<IIIBBH", elf, offset)
+                    symbol = strings[name:].split(b"\0", 1)[0].decode()
+                    symbols[symbol] = value
+                    object_sizes[symbol] = size
             binary, _ = fw.check_elf(path)
             for index, handler in ((25, "TIMER1_IRQHandler"), (17, "RADIO_IRQHandler")):
                 self.assertIn(handler, symbols)
                 self.assertNotEqual(symbols[handler], symbols["Default_Handler"])
                 self.assertEqual(struct.unpack_from("<I", binary, index * 4)[0], symbols[handler] | 1)
             self.assertNotIn("SysTick_Handler", symbols)
+            for name in ("dma", "tx_dma", "packets", "framebuffer"):
+                if name not in symbols: continue  # Mode/role-specific storage.
+                self.assertEqual(symbols[name] % 4, 0, name)
+                self.assertGreaterEqual(symbols[name], fw.RAM_START)
+                self.assertLessEqual(symbols[name] + object_sizes[name], fw.RAM_END - fw.STACK_SIZE)
+            for name in ("malloc", "calloc", "realloc", "_sbrk"):
+                self.assertNotIn(name, symbols)
 
     def test_built_images_if_present(self):
         for role in ("tx", "rx"):

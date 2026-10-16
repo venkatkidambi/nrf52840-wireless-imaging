@@ -1,4 +1,4 @@
-# Milestone 3 image transfer
+# Reliable image transfer (Milestones 3–4)
 
 This mode transfers one deterministic 320 × 320, 8-bit grayscale frame per reset.
 Both devices allocate a static 102,400-byte framebuffer. The TX producer is
@@ -30,6 +30,10 @@ The benchmark command remains unchanged:
 ```
 
 Image mode accepts `--interval-us` from 1044 to 3000, or `--max-throughput`.
+`--image-profile baseline|1200|1100|limit|max` selects 1500/1200/1100/1044/0 us.
+Only the original 1500 us configuration has hardware image evidence; the new
+firmware and all shorter intervals require physical validation. See the
+[performance audit and experiment procedure](performance.md).
 Its payload/count are fixed; incompatible overrides are rejected. The 3000 µs
 limit keeps bounded recovery compatible with frame timeouts. Benchmark limits,
 packet formats, logging, and maximum-throughput mode are unchanged. Direct builds
@@ -85,7 +89,7 @@ Every DMA packet is 248 bytes, zero padded after its declared body.
 | FRAME_END | 4 | Empty; explicitly requests a feedback window |
 | MISSING | 5 | 55-byte bitmap: bit i = 1 requests segment i; unused high bits zero |
 | FRAME_COMPLETE | 6 | Verified frame CRC32:u32 |
-| COMMIT | 7 | First 13 telemetry words below; token is last data round + 1 |
+| COMMIT | 7 | Words 0–12 followed by 24–39 (116 bytes); token is last data round + 1 |
 | COMMIT_ACK | 8 | Empty |
 | ABORT | 9 | Error code:u32 |
 
@@ -111,9 +115,10 @@ as well as CRC32. Tests feed the actual C-generated USB stream to the Python par
 3. RX responds only to START/END/COMMIT, at least **3000 µs after that request's
    hardware END**. It sends one response and immediately returns to RX. There are
    no unsolicited feedback timers that could collide with a data burst.
-4. TX listens for **120 ms after request END**, accepting only the corresponding
-   type/frame/token. It waits another 3000 µs from response END before transmitting.
-   Each control transaction has eight attempts. A timeout repeats the control
+4. TX listens for **120 ms after END requests**, or **20 ms for START/COMMIT**,
+   accepting only the corresponding type/frame/token. It waits another 3000 µs
+   from response END before transmitting. END has eight attempts; START/COMMIT
+   have 48, preserving the original 960 ms total timeout allowance. A timeout repeats the control
    request, never the full data burst. CRC-failed replies are ignored.
 5. Each MISSING bitmap creates the next round. TX sends only requested indices;
    at most 16 recovery rounds follow the original burst. Missing END or feedback
@@ -150,21 +155,26 @@ claim of measured switching latency. Both roles record the maximum local time
 spent in direction-enable calls, including software and interrupt latency; that
 also includes initial enable. Measure it on hardware before reducing the guard.
 
-The unchanged driver starts the alternate aligned DMA slot before invoking the
+The RX driver starts the alternate aligned DMA slot before invoking the
 image callback. The callback copies CRC-valid packets into an eight-slot SPSC
 queue (seven usable), publishes with a memory barrier, and returns. Foreground
 holds a queue slot until its copy finishes, then releases it. Queue overflow drops
 the new packet and increments a counter; selective recovery handles missing DATA.
 DMA never targets the framebuffer. TX copies serialized packets to an aligned
-static DMA buffer and does not alter it before `radio_tx_wait()` completes.
+pair of static DMA buffers and stages the alternate buffer while the current
+packet transmits. The END ISR arms the next TIMER/PPI START only after TXIDLE.
+A two-entry completion queue preserves results if foreground is delayed; each
+DMA buffer stays immutable until its corresponding wait returns. An absent
+producer leaves RADIO idle. The burst drains before END feedback or direction changes.
 The framebuffer becomes immutable on verification. USB uses a separate header,
 metadata buffer, CDC FIFO, and the immutable framebuffer source.
 
 The camera producer and full-frame CRC do not run in an ISR. DATA processing is
 foreground work; the image loop services USB nonblockingly on each visit. Both
 roles retain TIMER3/PPI scheduling and the independent TIMER1 wakeup. Fixed DATA
-intervals rebase if late, as in the benchmark. Image telemetry does not claim
-requested spacing was achieved; `tx_initial_us` measures actual software span.
+intervals rebase if late, as in the benchmark. Measured ADDRESS spacing and END-to-next-START handoff now accompany the actual
+`tx_initial_us` software span. A late compare is counted once per packet and
+rebased; max mode retains at least 20 us after END for receiver handoff.
 
 ## USB framing and backpressure
 
@@ -183,10 +193,12 @@ Each record starts with this 24-byte header:
 | 20 | CRC32 of header bytes 0–19 followed by the body |
 
 Types and exact lengths: READY=1/52 bytes, START=2/20 bytes, PIXELS=3/102400
-bytes, RESULT=4/96 bytes, ERROR=5/4 bytes. READY contains seven configuration words
+bytes, RESULT=4/180 bytes (legacy 96 also accepted by host), ERROR=5/4 bytes. READY contains seven configuration words
 in retained-firmware order, then radio_ready, active, crc_errors, invalid,
 queue_drops, usb_errors. START repeats the radio metadata. ERROR contains status.
-RESULT contains all 24 telemetry words below. The host accepts bounded ASCII
+RESULT contains 45 telemetry words; the original 24 retain their order.
+New RX accepts both the old 52-byte and new 116-byte COMMIT. Old RX cannot accept
+new COMMIT, so always rebuild and flash both roles through the existing runner. The host accepts bounded ASCII
 diagnostic lines only between records; body bytes are never parsed as text/magic.
 It rejects unknown versions/types, oversized or incorrect lengths, bad CRCs,
 truncation, duplicate/mixed frames, pixels without metadata, and incomplete results.
@@ -202,7 +214,7 @@ or host timeout can therefore fail collection after radio success.
 
 All device times are unsigned local microseconds, wrap-safe within bounded runs.
 No timestamp from one board is subtracted from a timestamp on another board.
-The first 13 words are frozen into COMMIT **before its own retries**; control RTT
+The TX words (0–12 and 24–39) are frozen into COMMIT **before its own retries**; control RTT
 and retry aggregates therefore cover START and END exchanges, excluding COMMIT.
 
 | Word | Host field | Definition |
@@ -225,6 +237,27 @@ and retry aggregates therefore cover START and END exchanges, excluding COMMIT.
 | 21 | usb_enqueue_us | RX PIXELS header preparation to final image byte accepted into CDC FIFO; includes backpressure, not a USB bus completion timestamp |
 | 22 | received_packets | Unique accepted segments, must be 434 |
 | 23 | crc32 | CRC32 actually calculated from RX framebuffer |
+| 24 | tx_crc_us | TX full-frame CRC before START, excludes generation |
+| 25–28 | tx_spacing_n/min/mean/max_us | ADDRESS spacing only between consecutive DATA in the same burst |
+| 29 | tx_missed_deadlines | One count per completed fixed-interval DATA whose compare needed rebasing; max mode excluded |
+| 30–31 | tx_airtime_mean/max_us | DATA END minus ADDRESS plus 24 us preamble/address |
+| 32–33 | tx_handoff_mean/max_us | Prior DATA END to next DATA START, same burst |
+| 34 | tx_prepare_max_us | DATA serialization call span, excludes adapter DMA copy and waiting |
+| 35 | tx_retransmission_us | Sum of retransmission DATA burst spans, including preparation/drain |
+| 36 | tx_feedback_us | Sum of END exchange spans, including retries, CRC wait and return guard |
+| 37 | tx_schedule_late_max_us | Largest positive actual START minus requested fixed deadline |
+| 38–39 | tx_to_rx_max_us / tx_rx_to_tx_max_us | TX board direction-enable call maxima, including initial enable |
+| 40 | rx_processing_max_us | Foreground DATA decode/copy/bitmap processing maximum |
+| 41 | rx_rearm_max_us | Hardware-captured END to alternate RX START maximum |
+| 42 | usb_header_crc_us | PIXELS record header/CRC preparation; subset of usb_enqueue_us |
+| 43–44 | rx_tx_to_rx_max_us / rx_to_tx_max_us | RX board direction-enable maxima, including initial enable |
+
+Initial DATA, retransmission DATA, and END feedback spans are sequential TX
+components; tx_radio_us also includes START negotiation and loop overhead.
+RX verification overlaps TX feedback; USB header CRC is inside enqueue;
+host receive overlaps enqueue. Do not add these overlapping measurements.
+The COMMIT round trip is deliberately excluded from frozen TX telemetry;
+receipt of COMMIT proves COMPLETE reached TX, even when COMMIT_ACK is lost.
 
 The host records START metadata reception through validated RESULT as
 `host_delivery_seconds`, including its byte comparison. `host_usb_receive_seconds`
@@ -246,9 +279,9 @@ measured by these software tests**. Bidirectional loss must be measured anew.
 ## Memory and validation scope
 
 Each role has one 102400-byte framebuffer. The driver has two 248-byte DMA slots,
-the adapter one 248-byte TX DMA buffer and eight 252-byte packet queue slots.
+the adapter two 248-byte TX DMA buffers and eight 252-byte packet queue slots.
 RX additionally owns the 55-byte bitmap, protocol state, foreground packet/reply
-copies, 24-byte USB header, 96-byte metadata area, and existing 4096-byte CDC FIFO.
+copies, 64-byte USB header/prefix, 180-byte metadata area, and existing 4096-byte CDC FIFO.
 Exact linked totals are recorded in [validation results](validation.md).
 Low SRAM through 0x20008000 and the top 8192-byte stack reservation remain intact.
 The unchanged linker and ELF/UF2 validator enforce `[0x27000,0xEA000)` flash and

@@ -1,5 +1,60 @@
 # Validation results
 
+## Milestone 4 — 2026-10-16
+
+The M3 hardware measurement is preserved separately: reliable radio 735,221 us,
+initial DATA 650,606 us, one recovery round/18 retransmits, complete image PASS.
+It is not an M4 measurement. No physical boards were flashed, no live serial
+port opened, and no new RF or USB performance measured during this work.
+
+ARM GCC 15.2.1 (Arm GNU Toolchain 15.2.Rel1), C11 `-Os`, warnings as errors:
+all eight paired configurations compile and pass intended configuration,
+ELF/BIN/UF2, vector, role/hash, flash-region and static-RAM checks.
+
+| Configuration | Interval us | TX flash bytes | RX flash bytes | TX static RAM | RX static RAM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Image baseline | 1500 | 8844 | 17296 | 105960 | 111908 |
+| Image candidate | 1200 | 8844 | 17296 | 105960 | 111908 |
+| Image candidate | 1100 | 8844 | 17296 | 105960 | 111908 |
+| Image admission boundary | 1044 | 8844 | 17296 | 105960 | 111908 |
+| Image maximum | 0 | 8840 | 17288 | 105960 | 111908 |
+| Benchmark default (32 bytes) | 10000 | 4812 | 17804 | 492 | 9740 |
+| Benchmark 240-byte boundary | 1044 | 4816 | 17868 | 1324 | 10156 |
+| Benchmark 247-byte maximum | 0 | 4804 | 17868 | 1356 | 10172 |
+
+Both roles still reserve an additional 8192-byte stack. Baseline image flash ends
+at TX `0x2928c`, RX `0x2b390`, below `0xea000`. Static RAM includes alignment;
+RX leaves 109276 bytes of application SRAM beyond static data and reserved stack.
+No heap or camera symbols are linked. Stack space is a reservation, not a measured
+high-water mark. Final `build/` artifacts are image/2440 MHz/1500 us/run tag 1.
+
+`make test` passes 89 Python tests, five benchmark-payload protocol builds, and
+seven native timing/clock/image/driver executables. The production RADIO driver
+is now tested with a behavioral register model, including staged-buffer ownership,
+ordered double completions, late producers, deadline accounting, wrap, admission
+limits, RX rearm-before-callback, cancellation and bounded peripheral failure.
+The actual TIMER/PPI register setup is tested for one-shot START/capture/disarm
+routing and the 7/8 us safe-arm boundary. No model claims cycle-accurate timing.
+Existing selective-repair and lost COMPLETE/COMMIT/ACK tests remain; short-window
+attempts preserve the original total timeout allowance. CRC tests compare byte
+lookup against independent bitwise CRC over unaligned/random inputs, empty
+buffers and incremental splits. The C-produced frame still matches independent
+Python pixels and CRC `653244199`. USB tests include partial/zero writes, blocking,
+reconnect replay and legacy/extended result parsing. Comparison tests retain
+failures and reject partial, mismatched and copy-unconfirmed runs as candidates.
+
+AddressSanitizer and UndefinedBehaviorSanitizer pass for native image protocol,
+USB writer, image adapter, RADIO driver and TIMER/PPI tests. Baseline SHA-256
+checks pass, and copied measurement JSON still matches the untouched experiment.
+Build logs/artifacts are under `build/m4-verified/`; the full test log is
+`build/m4-test.log`, and sanitizer output is `build/m4-sanitizers/checks.log`.
+
+These checks do not validate RF loss, silicon state-transition latency, USB bus
+throughput, oscillator accuracy or timing under physical load. All M4 scheduler,
+CRC/generation, USB coalescing and retry-cadence performance require operator
+hardware runs. The 1500 us default and 3 ms guards remain; see the
+[performance audit and exact hardware procedure](performance.md).
+
 ## Milestone 3 — 2026-10-16 (software validation only)
 
 Implemented a separate image-mode protocol, selective half-duplex recovery,

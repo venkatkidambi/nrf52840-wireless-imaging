@@ -27,10 +27,14 @@ int image_rx_main(void)
             uint32_t began = radio_time();
             bool respond = image_receiver_packet(&receiver, packet, sizeof packet, end, reply);
             if (verifying) receiver.stats[IM_VERIFY_US] = radio_time() - began;
+            if (packet[1] == IMG_DATA) {
+                uint32_t dt = radio_time() - began;
+                if (dt > receiver.stats[IM_RX_CPU_MAX]) receiver.stats[IM_RX_CPU_MAX] = dt;
+            }
             if (respond) {
                 /* Never send an overdue response into the peer's next retry.
                  * Its repeated request will produce the same reply. */
-                if ((uint32_t)(radio_time() - end) < IMAGE_REPLY_TIMEOUT_US - 10000u) {
+                if (image_response_in_time(packet[1], radio_time() - end)) {
                     image_radio_guard(end);
                     armed = image_radio_send(reply) && image_radio_listen();
                 }
@@ -45,6 +49,8 @@ int image_rx_main(void)
         receiver.stats[IM_CRC_ERRORS] = image_radio_crc_errors;
         receiver.stats[IM_QUEUE_DROPS] = image_radio_drops;
         receiver.stats[IM_RX_TURN_MAX] = image_radio_turn_max;
+        receiver.stats[IM_RX_REARM_MAX] = radio_timing_stats.rearm.max;
+        image_radio_rx_stats(receiver.stats);
         image_usb_task(&receiver, armed);
     }
 }

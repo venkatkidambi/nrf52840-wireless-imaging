@@ -12,6 +12,7 @@ SETTINGS = {"RADIO_FREQ_MHZ": (2440, 2360, 2500),
 FIELDS = {"RADIO_FREQ_MHZ": "freq_mhz", "TX_INTERVAL_MS": "tx_interval_ms",
           "TX_PACKET_COUNT": "packet_target", "APP_PAYLOAD_SIZE": "payload_bytes",
           "TX_INTERVAL_US": "tx_interval_us", "RUN_ID": "run_tag"}
+IMAGE_PROFILES = {"baseline": 1500, "1200": 1200, "1100": 1100, "limit": 1044, "max": 0}
 
 def integer(name, value, low, high):
     if not re.fullmatch(r"0|[1-9][0-9]*", value) or not low <= int(value) <= high:

@@ -46,11 +46,11 @@ static bool exchange(void *context, const uint8_t *p, uint8_t *out)
         if (out[1] == IMG_COMPLETE && complete_loss) { --complete_loss; drop = true; }
         if (out[1] == IMG_COMMIT_ACK && commit_ack_loss) { --commit_ack_loss; drop = true; }
     }
-    tick += drop ? IMAGE_REPLY_TIMEOUT_US : 2 * IMAGE_GUARD_US + 1024;
+    tick += drop ? image_reply_timeout(p[1]) : 2 * IMAGE_GUARD_US + 1024;
     image_receiver_tick(&rx, tick);
     return !drop;
 }
-static image_link_t link = {NULL, now, send, exchange};
+static image_link_t link = {NULL, now, send, exchange, NULL};
 static void canaries(void)
 { assert(guarded.before == 0xa5a5a5a5 && guarded.after == 0xa5a5a5a5); }
 static void start(void)
@@ -66,9 +66,35 @@ static void data(unsigned i)
                  source + i * IMAGE_DATA_BYTES, image_segment_length(i));
     assert(!image_receiver_packet(&rx, wire, sizeof wire, ++tick, reply));
 }
+static uint32_t reference_crc(uint32_t crc, const uint8_t *p, size_t n)
+{
+    while (n--) {
+        crc ^= *p++;
+        for (unsigned i = 0; i < 8; ++i) crc = (crc >> 1) ^ ((crc & 1) ? 0xedb88320u : 0);
+    }
+    return crc;
+}
 int main(void)
 {
     image_generate(source);
+    assert(image_crc32(source, sizeof source) == 653244199u);
+    uint8_t random[1025]; uint32_t seed = 7;
+    for (unsigned i = 0; i < sizeof random; ++i) {
+        seed = seed * 1664525u + 1013904223u; random[i] = (uint8_t)(seed >> 24);
+    }
+    for (unsigned i = 0; i <= 1024; ++i) {
+        uint32_t crc = image_crc_update(seed, random + 1, i); /* Unaligned input. */
+        assert(crc == reference_crc(seed, random + 1, i));
+        unsigned split = i / 3;
+        assert(crc == image_crc_update(image_crc_update(seed, random + 1, split), random + 1 + split, i - split));
+    }
+    for (unsigned type = IMG_START; type <= IMG_COMMIT; ++type) {
+        uint32_t timeout = image_reply_timeout(type);
+        assert(timeout * image_control_tries(type) == IMAGE_REPLY_TIMEOUT_US * IMAGE_CONTROL_TRIES);
+        assert(image_response_in_time(type, timeout - 10001));
+        assert(!image_response_in_time(type, timeout - 10000));
+        assert(!image_response_in_time(type, timeout));
+    }
     assert(image_crc32((const uint8_t *)"123456789", 9) == 0xcbf43926u);
     assert(IMAGE_PACKETS == 434 && IMAGE_BITMAP_BYTES == 55);
     assert(image_segment_length(433) == 212 && image_segment_length(434) == 0);
@@ -132,17 +158,17 @@ int main(void)
     reset(); complete_loss = IMAGE_CONTROL_TRIES;
     assert(!image_transmit(&link, source, rx.frame, stats));
     assert(rx.verified && !rx.committed && rx.failed); /* No USB success. */
-    reset(); commit_ack_loss = IMAGE_CONTROL_TRIES;
+    reset(); commit_ack_loss = image_control_tries(IMG_COMMIT);
     assert(image_transmit(&link, source, rx.frame, stats));
     assert(rx.committed && rx.stats[IM_STATUS] == IMAGE_OK);
-    reset(); commit_loss = IMAGE_CONTROL_TRIES;
+    reset(); commit_loss = image_control_tries(IMG_COMMIT);
     assert(image_transmit(&link, source, rx.frame, stats));
     assert(!rx.committed); image_receiver_tick(&rx, tick + IMAGE_IDLE_TIMEOUT_US); assert(rx.failed);
     reset(); loss_mode = 2;
     assert(!image_transmit(&link, source, rx.frame, stats));
     assert(!rx.verified && !rx.committed && stats[IM_ROUNDS] == IMAGE_ROUNDS);
     assert(stats[IM_RETRANSMITS] == IMAGE_ROUNDS); canaries();
-    reset(); start_loss = IMAGE_CONTROL_TRIES;
+    reset(); start_loss = image_control_tries(IMG_START);
     assert(!image_transmit(&link, source, rx.frame, stats)); assert(!rx.active);
 
     reset(); start();

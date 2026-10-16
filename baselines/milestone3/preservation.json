@@ -1,0 +1,21 @@
+{
+  "source_commit": "1d38ce1257f2125917e59c42529f0dcd18ee7751",
+  "measured_experiment": "experiments/2026-10-16_010657_705686-0400_2440MHz_240B_1500us_434",
+  "note": "Rebuilt run_tag=1 artifacts are rollback firmware; measured original artifacts remain in experiment directory.",
+  "sha256": {
+    "tx.uf2.json": "30363f26ba6e8111b9b7fa78c3d2ea036aa9593df15b7b6a9656b8438d6fab55",
+    "summary.json": "a2c7480ec2f896e52713cb2cd6b8926054ec6c2962d212afaf3b95fc981726a8",
+    "rx.elf": "935a7e2c03feff3ed465d9a6f147b7b0cd119d6338121eaa7d3cde30dc432684",
+    "tx.map": "9c41afa239970d3db987532ac71621ae657b2ef0fe931c521e29ee4253be1c34",
+    "rx.uf2.json": "484bc60e74f6ff58d8989e4da4d62aac4c28ec38bf2ac9e3a972471a08c6dce4",
+    "rx.uf2": "90d7845179ced06bf70e5a47183f87fd3b0df0e269e2b32549c2e5d0dd990be2",
+    "tx.elf": "776e1f0487b71e8df15fc63182b30099ef980afc51db1cb34c375cddafef3978",
+    "config.json": "77e685663e6440fd2a327299204e72ade4f2b5cc70389fe702c1529e1250e094",
+    "source.tar": "94b7d9a8bdada6de8837fdee1b8603d775e56b61a601ca79147933c5c56ecbcf",
+    "tx.uf2": "32009a904717bac32e8417c84735f84d5d82a44d5b15a844d5dcf1c372537f3b",
+    "rx.map": "13e3eaa207f9b8c0d8f8a4b66e9abea466e4bc64aa231255a2ae6397079da3b0",
+    "tx.bin": "a4eccbed7a14c857d0d6939bdc4fc2ce20f4ae6f0bd7485251d1e5507bbd2d52",
+    "rx.bin": "6200eefd741ea7dd1b7187b469f2021e66a260fc73b5e9624bd2048e0a390328",
+    "image.json": "a25bc57976596d5623b0b69b4da4dc591d715ec183a666f4a48694ee39e6f293"
+  }
+}

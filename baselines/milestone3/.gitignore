@@ -1,0 +1,7 @@
+# Local rollback products are preserved, but do not put generated binaries in git.
+*.elf
+*.bin
+*.uf2
+*.map
+*.disassembly.txt
+source.tar

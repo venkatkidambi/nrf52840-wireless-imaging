@@ -1,0 +1,19 @@
+{
+  "role": "rx",
+  "sha256": "90d7845179ced06bf70e5a47183f87fd3b0df0e269e2b32549c2e5d0dd990be2",
+  "configuration": {
+    "freq_mhz": 2440,
+    "tx_interval_ms": 1,
+    "packet_target": 434,
+    "tx_power_dbm": 0,
+    "payload_bytes": 240,
+    "tx_interval_us": 1500,
+    "run_tag": 1,
+    "mode": "image"
+  },
+  "app_start": 159744,
+  "app_end": 958464,
+  "flash_bytes": 15276,
+  "static_ram_bytes": 111276,
+  "stack_bytes": 8192
+}

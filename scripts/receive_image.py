@@ -28,6 +28,11 @@ retransmitted_packets tx_radio_us tx_control_rtt_n tx_control_rtt_min_us
 tx_control_rtt_mean_us tx_control_rtt_max_us control_retries tx_turn_max_us
 initial_missing_packets rx_radio_us rx_verify_us duplicates invalid crc_errors
 queue_drops rx_turn_max_us usb_enqueue_us received_packets crc32""".split()
+EXTRA_STAT_FIELDS = """tx_crc_us tx_spacing_n tx_spacing_min_us tx_spacing_mean_us tx_spacing_max_us
+tx_missed_deadlines tx_airtime_mean_us tx_airtime_max_us tx_handoff_mean_us tx_handoff_max_us
+tx_prepare_max_us tx_retransmission_us tx_feedback_us tx_schedule_late_max_us
+tx_to_rx_max_us tx_rx_to_tx_max_us rx_processing_max_us rx_rearm_max_us usb_header_crc_us
+rx_tx_to_rx_max_us rx_to_tx_max_us""".split()
 
 def require(condition, message):
     if not condition:
@@ -84,7 +89,9 @@ class Parser:
                     break
                 _, version, kind, reserved, frame, length, crc = HEADER.unpack_from(self.pending)
                 require(version == 1 and reserved == 0 and kind in LENGTHS, "Invalid USB header")
-                require(length == LENGTHS[kind], "Invalid USB record length")
+                require(length == LENGTHS[kind] or
+                        (kind == RESULT and length == 4 * (len(STAT_FIELDS) + len(EXTRA_STAT_FIELDS))),
+                        "Invalid USB record length")
                 if kind == PIXELS and self.image_started_at is None:
                     self.image_started_at = time.monotonic()
                 if len(self.pending) < HEADER.size + length:
@@ -136,7 +143,8 @@ class Receiver:
             self.pixels = body
             return {"event": "pixels_verified", "bytes": len(body)}
         require(kind == RESULT and self.pixels is not None, "Completion without verified image")
-        stats = dict(zip(STAT_FIELDS, struct.unpack("<24I", body)))
+        require(len(body) in (96, 4 * (len(STAT_FIELDS) + len(EXTRA_STAT_FIELDS))), "Invalid result length")
+        stats = dict(zip(STAT_FIELDS + EXTRA_STAT_FIELDS, struct.unpack(f"<{len(body)//4}I", body)))
         require(stats["status"] == 1 and stats["received_packets"] == PACKETS and
                 stats["crc32"] == self.metadata["crc32"], "Invalid completion status/count/checksum")
         require(stats["tx_initial_packets"] == PACKETS and stats["retransmission_rounds"] <= 16 and

@@ -1,0 +1,84 @@
+{
+  "freq_mhz": 2440,
+  "tx_interval_ms": 1,
+  "packet_target": 434,
+  "payload_bytes": 240,
+  "tx_interval_us": 1500,
+  "run_tag": 4233517173,
+  "tx_power_dbm": 0,
+  "mode": "image",
+  "timestamp": "2026-10-16T05:06:57.706228+00:00",
+  "firmware": {
+    "rx": {
+      "role": "rx",
+      "sha256": "75784bf8d687c3987bd6bd0d939447bfd03ca288640b2c04f81ec8fedcf57233",
+      "configuration": {
+        "freq_mhz": 2440,
+        "tx_interval_ms": 1,
+        "packet_target": 434,
+        "tx_power_dbm": 0,
+        "payload_bytes": 240,
+        "tx_interval_us": 1500,
+        "run_tag": 4233517173,
+        "mode": "image"
+      },
+      "app_start": 159744,
+      "app_end": 958464,
+      "flash_bytes": 15288,
+      "static_ram_bytes": 111276,
+      "stack_bytes": 8192
+    },
+    "tx": {
+      "role": "tx",
+      "sha256": "ebf0b2c120edab7a4d737e6900e58e712b05aef84c27a8397e2ad1928b6e1192",
+      "configuration": {
+        "freq_mhz": 2440,
+        "tx_interval_ms": 1,
+        "packet_target": 434,
+        "tx_power_dbm": 0,
+        "payload_bytes": 240,
+        "tx_interval_us": 1500,
+        "run_tag": 4233517173,
+        "mode": "image"
+      },
+      "app_start": 159744,
+      "app_end": 958464,
+      "flash_bytes": 6208,
+      "static_ram_bytes": 105456,
+      "stack_bytes": 8192
+    }
+  },
+  "boards": {
+    "rx": {
+      "entry": 4295072775,
+      "serial": "AC261B8166A787DE",
+      "vendor": 10374,
+      "product": 69,
+      "location": 34603008,
+      "path": "/Volumes/XIAO-SENSE"
+    },
+    "tx": {
+      "entry": 4295072826,
+      "serial": "841CF6B9224FDB8C",
+      "vendor": 10374,
+      "product": 69,
+      "location": 17825792,
+      "path": "/Volumes/XIAO-SENSE 1"
+    }
+  },
+  "copy_status": {
+    "rx": "confirmed",
+    "tx": "confirmed"
+  },
+  "rx_application": {
+    "entry": 4295072887,
+    "serial": "AC261B8166A787DE",
+    "vendor": 51966,
+    "product": 16385,
+    "location": 34603008,
+    "path": "/dev/cu.usbmodem2101"
+  },
+  "tx_flash_started": "2026-10-16T05:07:20.901865+00:00",
+  "tx_copy_returned": "2026-10-16T05:07:24.672275+00:00",
+  "tx_copy_completed": "2026-10-16T05:07:24.672275+00:00"
+}

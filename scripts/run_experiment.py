@@ -43,12 +43,16 @@ def arguments(argv=None):
     schedule = parser.add_mutually_exclusive_group()
     schedule.add_argument("--interval-us", help="START interval in microseconds")
     schedule.add_argument("--max-throughput", action="store_true")
+    schedule.add_argument("--image-profile", choices=tuple(configure.IMAGE_PROFILES),
+                          help="Image interval preset; only baseline (1500 us) has hardware evidence")
     parser.add_argument("--packets")
     args = parser.parse_args(argv)
     try:
         if args.frequency and args.frequency_option or args.count and args.packets:
             raise ValueError("Do not mix positional and named values for the same setting")
-        if args.interval and (args.interval_us is not None or args.max_throughput):
+        if args.image_profile and args.mode != "image":
+            raise ValueError("--image-profile requires --mode image")
+        if args.interval and (args.interval_us is not None or args.max_throughput or args.image_profile):
             raise ValueError("Do not mix legacy milliseconds with microsecond/max scheduling")
         env = {"RADIO_FREQ_MHZ": args.frequency_option or args.frequency or "2440",
                "APP_PAYLOAD_SIZE": args.payload or ("240" if args.mode == "image" else "32"),
@@ -60,6 +64,8 @@ def arguments(argv=None):
         if args.interval: env["TX_INTERVAL_MS"] = args.interval
         if args.interval_us is not None: env["TX_INTERVAL_US"] = args.interval_us
         if args.max_throughput: env["TX_INTERVAL_US"] = "0"
+        if args.image_profile:
+            env["TX_INTERVAL_US"] = str(configure.IMAGE_PROFILES[args.image_profile])
         config = configure.configuration(env)
         if config["TX_PACKET_COUNT"] == 0:
             raise ValueError("Experiment runner requires a bounded packet count greater than zero")

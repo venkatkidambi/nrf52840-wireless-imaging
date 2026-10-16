@@ -38,11 +38,22 @@ with little extra software work between those steps.
 
 ### How We Make Transfers Faster
 
+**Hardware handles precise transmission timing and moves packet data, freeing
+the CPU to prepare and verify the image.** Once the CPU schedules a packet,
+TIMER + PPI trigger its transmission without the CPU issuing a command at that
+exact moment. EasyDMA moves the bytes between RAM and the radio without the CPU
+copying each byte into or out of the radio.
+
+The CPU still prepares and copies packet buffers, handles packet completion,
+schedules the next packet, tracks missing pieces, manages retransmissions, and
+calculates CRC32. These hardware features offload specific jobs; the full image
+transfer still needs the CPU.
+
 - **Less waiting between packets.** The demonstrated setting sends a new packet
   every **1.1 ms**, down from the conservative 1.5 ms setting. Across 434 packets,
   that trims roughly **173 ms** from the planned first pass, before feedback or
-  retries. Hardware timers keep this schedule independent of the main program's
-  other work.
+  retries. Hardware timers trigger each prepared, scheduled packet; the CPU
+  must still keep the next packet ready on time.
 - **Prepare the next packet while sending the current one.** Two packet buffers
   work in turns: one is used by the radio while the other gets ready. The receiver
   also switches buffers before processing the packet that just arrived, so it

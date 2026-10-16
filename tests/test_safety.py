@@ -1,4 +1,5 @@
 import hashlib
+import errno
 import json
 from pathlib import Path
 import struct
@@ -6,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -34,6 +36,98 @@ def current_volume(path):
             out.write(block)
 
 class Safety(unittest.TestCase):
+    def test_copy_regular_file_and_short_host_writes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "IMAGING-TX.UF2"
+            flash.copy_uf2(destination, b"test-image")
+            self.assertEqual(destination.read_bytes(), b"test-image")
+        with patch.object(flash.os, "open", return_value=123), \
+                patch.object(flash.os, "write", side_effect=[2, 3]) as write, \
+                patch.object(flash.os, "fsync") as sync, patch.object(flash.os, "close") as close:
+            flash.copy_uf2("/unused", b"12345")
+        self.assertEqual(write.call_count, 2)
+        sync.assert_called_once_with(123)
+        close.assert_called_once_with(123)
+
+    def test_only_full_write_late_io_errors_are_unconfirmed(self):
+        for stage in ("fsync", "close"):
+            with self.subTest(stage=stage), patch.object(flash.os, "open", return_value=123), \
+                    patch.object(flash.os, "write", return_value=5), patch.object(flash.os, "fsync") as sync, \
+                    patch.object(flash.os, "close") as close:
+                (sync if stage == "fsync" else close).side_effect = OSError(errno.EIO, "device gone")
+                with self.assertRaises(flash.CopyFailure) as error:
+                    flash.copy_uf2("/unused", b"12345")
+                self.assertTrue(error.exception.unconfirmed)
+                self.assertIn(f"UF2 {stage}: 5/5", str(error.exception))
+                close.assert_called_once()
+
+    def test_early_write_error_is_failure_even_if_close_also_errors(self):
+        with patch.object(flash.os, "open", return_value=123), \
+                patch.object(flash.os, "write", side_effect=[2, OSError(errno.EIO, "write failed")]), \
+                patch.object(flash.os, "fsync") as sync, \
+                patch.object(flash.os, "close", side_effect=OSError(errno.EIO, "close failed")), \
+                self.assertRaises(flash.CopyFailure) as error:
+            flash.copy_uf2("/unused", b"x" * 1024)
+        self.assertFalse(error.exception.unconfirmed)
+        self.assertIn("write: 2/1024", str(error.exception))
+        sync.assert_not_called()
+
+    def test_single_failed_final_write_has_unknown_delivery_not_zero_delivery(self):
+        # The observed 4096-byte syscall failed without an acknowledged count.
+        error = flash.CopyFailure("write", 0, 4096, OSError(errno.EIO, "device gone"), attempted=4096)
+        self.assertTrue(error.unconfirmed)
+        self.assertIn("0/4096 bytes acknowledged", str(error))
+        self.assertIn("submitted 4096", str(error))
+
+    def test_final_uf2_block_error_is_unconfirmed_and_never_retried(self):
+        data = bytes(range(256)) * 16
+        with patch.object(flash.os, "open", return_value=123), \
+                patch.object(flash.os, "write", side_effect=[512] * 7 + [OSError(errno.EIO, "device gone")]) as write, \
+                patch.object(flash.os, "fsync") as sync, patch.object(flash.os, "close") as close, \
+                self.assertRaises(flash.CopyFailure) as error:
+            flash.copy_uf2("/unused", data)
+        self.assertTrue(error.exception.unconfirmed)
+        self.assertIn("write: 3584/4096", str(error.exception))
+        self.assertIn("submitted 512", str(error.exception))
+        self.assertEqual(write.call_count, 8)
+        self.assertEqual(b"".join(bytes(call.args[1]) for call in write.call_args_list), data)
+        sync.assert_not_called()
+        close.assert_called_once()
+
+    def test_early_block_io_error_is_not_reclassified_as_reboot(self):
+        with patch.object(flash.os, "open", return_value=123), \
+                patch.object(flash.os, "write", side_effect=OSError(errno.EIO, "device gone")) as write, \
+                patch.object(flash.os, "close"), self.assertRaises(flash.CopyFailure) as error:
+            flash.copy_uf2("/unused", b"x" * 4096)
+        self.assertFalse(error.exception.unconfirmed)
+        self.assertIn("write: 0/4096", str(error.exception))
+        self.assertIn("submitted 512", str(error.exception))
+        write.assert_called_once()
+
+    def test_short_write_finishes_same_block_before_next_block(self):
+        with patch.object(flash.os, "open", return_value=123), \
+                patch.object(flash.os, "write", side_effect=[256, 256, 512]) as write, \
+                patch.object(flash.os, "fsync"), patch.object(flash.os, "close"):
+            flash.copy_uf2("/unused", b"x" * 1024)
+        self.assertEqual([len(call.args[1]) for call in write.call_args_list], [512, 256, 512])
+
+    def test_zero_write_and_unrelated_sync_errors_are_failures(self):
+        for written, sync_error in ((0, None), (5, OSError(errno.ENOSPC, "disk full"))):
+            with self.subTest(written=written), patch.object(flash.os, "open", return_value=123), \
+                    patch.object(flash.os, "write", return_value=written), \
+                    patch.object(flash.os, "fsync", side_effect=sync_error), patch.object(flash.os, "close"), \
+                    self.assertRaises(flash.CopyFailure) as error:
+                flash.copy_uf2("/unused", b"12345")
+            self.assertFalse(error.exception.unconfirmed)
+
+    def test_open_error_is_failure(self):
+        with patch.object(flash.os, "open", side_effect=OSError(errno.EACCES, "denied")), \
+                patch.object(flash.os, "close") as close, self.assertRaises(flash.CopyFailure) as error:
+            flash.copy_uf2("/unused", b"12345")
+        self.assertFalse(error.exception.unconfirmed)
+        self.assertIn("open: 0/5", str(error.exception))
+        close.assert_not_called()
+
     def test_roundtrip(self):
         raw = image()
         decoded = fw.decode_uf2(fw.encode_uf2(raw))

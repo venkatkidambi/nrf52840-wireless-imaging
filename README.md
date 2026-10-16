@@ -9,7 +9,10 @@ Default: **2402 MHz, 10 ms between attempt starts, 10,000 attempts, 0 dBm**.
 The user reports successful reception with the preceding firmware, zero payload
 failures, and about 1.24% cumulative sequence gaps at one meter. This revision
 adds measurement to investigate those gaps; it does not establish their cause.
-**No hardware was flashed or measured during this milestone implementation.**
+Initial implementation used software checks only. A later operator-run 2440 MHz
+experiment reached sequence 9999 despite a host write error; a read-only RX
+inspection recovered its final counters. See validation results for evidence
+and the missing continuous-log limitation.
 
 See [the experiment procedure and timing definitions](docs/experiments.md) for
 all six required experiments, safe flashing commands, CSV collection, and how
@@ -52,7 +55,8 @@ interrupted summary. Nothing erases the chip or changes the verified application
 region `[0x27000, 0xEA000)`.
 
 Exit 0 means the final target sequence was observed followed by stable idle
-reports. Exit 2 means incomplete tail evidence or a timeout; a successful UF2
+reports and both host copies completed. Exit 2 means an unconfirmed copy,
+incomplete tail evidence, or a timeout; a successful UF2
 copy never proves packet transmission. See [runner behavior and completion
 criteria](docs/experiments.md#automated-runner-milestone-12) for identity handling,
 timeouts, recovery, and measurement limitations. Hardware flashing and a full
@@ -205,9 +209,14 @@ bootloader itself performs its normal application-update bookkeeping.
 The volume should disappear after a successful bootloader update. TX then runs
 without a USB interface. RX enumerates as **nRF52840 Imaging RX**, with a serial
 number derived from its immutable FICR DEVICEID. A completed file copy alone
-does not prove firmware execution; follow the test below. If a copy errors during
-automatic ejection, inspect the board before retrying; the script does not retry
-or choose another board automatically.
+does not prove firmware execution; follow the test below. The flasher reports
+the failing copy operation, acknowledged byte count, and current submitted span.
+Writes are limited to 512-byte UF2 blocks. EIO/ENODEV on the final submitted
+block, or during final sync/close after acknowledged writes, returns exit 3
+(copy unconfirmed). A failed syscall does not prove zero device delivery.
+The runner keeps collecting RX evidence, records the warning,
+and never turns an unconfirmed copy into a successful-copy claim. Other copy
+errors abort. No copy is automatically retried or redirected to another board.
 
 ## Monitor RX
 

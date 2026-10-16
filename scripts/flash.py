@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Discover and explicitly select ONE mounted XIAO UF2 volume. Never erase."""
 import argparse
+import errno
 import os
 from pathlib import Path
 import struct
@@ -9,6 +10,49 @@ from firmware import (APP_START, APP_END, BOARD_FAMILY, FAMILY, block_header,
                       require, validated_artifact)
 
 EXPECTED_BOARD = "Seeed_XIAO_nRF52840_Sense"
+
+class CopyFailure(Exception):
+    def __init__(self, stage, written, total, cause, attempted=0):
+        # A failed write may still have delivered data to a rebooting device.
+        # Only the final submitted span (or sync/close) qualifies for continued
+        # observation, never success. Earlier write failures remain hard errors.
+        final_write = stage == "write" and attempted > 0 and written + attempted == total
+        final_sync = written == total and stage in ("fsync", "close")
+        self.unconfirmed = ((final_write or final_sync)
+                            and cause.errno in (errno.EIO, errno.ENODEV))
+        super().__init__(f"UF2 {stage}: {written}/{total} bytes acknowledged by host writes; "
+                         f"current write submitted {attempted} bytes; {cause}")
+
+def copy_uf2(destination, data):
+    """Track UF2 block writes and uncertain final delivery; never retry a copy."""
+    fd, written, attempted, stage, failure = None, 0, 0, "open", None
+    try:
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)
+        stage = "write"
+        while written < len(data):
+            # Keep the final UF2 block in its own syscall to identify where a
+            # reboot races the host's acknowledgement. No per-block delay/sync.
+            attempted = min(512 - written % 512, len(data) - written)
+            count = os.write(fd, memoryview(data)[written:written + attempted])
+            if count <= 0:
+                attempted = 0  # Explicit zero progress is not ambiguous delivery.
+                raise OSError(errno.EIO, "Write made no progress")
+            written += count
+            attempted = 0
+        print(f"UF2 host writes acknowledged {written}/{len(data)} bytes; syncing...", flush=True)
+        stage = "fsync"
+        os.fsync(fd)
+    except OSError as exc:
+        failure = CopyFailure(stage, written, len(data), exc, attempted)
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                if failure is None:
+                    failure = CopyFailure("close", written, len(data), exc)
+    if failure is not None:
+        raise failure
 
 def info(volume):
     text = (volume / "INFO_UF2.TXT").read_text()
@@ -90,11 +134,14 @@ def main():
             verify_volume(volume, args.usb_entry_id)
         destination = volume / f"IMAGING-{args.role.upper()}.UF2"
         require(not destination.is_symlink(), "Destination must not be a symlink")
-        with destination.open("wb") as out:
-            out.write(data)
-            out.flush()
-            os.fsync(out.fileno())
+        copy_uf2(destination, data)
         print("UF2 copy completed. Bootloader reboot and application operation require hardware verification.")
+    except CopyFailure as exc:
+        if exc.unconfirmed:
+            parser.exit(3, f"UF2 copy UNCONFIRMED: {exc}\n"
+                        "Possible bootloader disconnect during final write/sync; this is not proof of successful flashing. "
+                        "Do not automatically retry.\n")
+        parser.exit(1, f"Flash refused/failed: {exc}\n")
     except (OSError, ValueError, KeyError, struct.error, subprocess.SubprocessError) as exc:
         parser.exit(1, f"Flash refused/failed: {exc}\n")
 

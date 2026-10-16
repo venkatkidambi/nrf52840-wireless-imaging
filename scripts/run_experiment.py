@@ -225,15 +225,23 @@ class Runner:
         self.capture = None
         self.last = None
         self.command_process = None
+        self.copy_status = {}
+        self.collection_status = None
 
-    def command(self, command, timeout=120):
+    def command(self, command, timeout=120, allowed_codes=(0,)):
         # The shell execs us; each child is explicitly reaped on errors/signals.
         with (self.folder / "runner.log").open("ab") as log:
+            log_start = log.tell()
             self.command_process = subprocess.Popen(command, cwd=ROOT, stdout=log,
                                                     stderr=log, start_new_session=True)
             try:
                 code = self.command_process.wait(timeout=timeout)
-                require(code == 0, f"Command failed ({code}): {' '.join(command)}; see runner.log")
+                if code not in allowed_codes:
+                    with (self.folder / "runner.log").open("rb") as output:
+                        output.seek(max(log_start, os.fstat(output.fileno()).st_size - 2048))
+                        detail = output.read().decode(errors="replace").strip()
+                    raise RunError(f"Command failed ({code}): {' '.join(command)}; see runner.log\n{detail}")
+                return code
             finally:
                 if self.command_process.poll() is None:
                     os.killpg(self.command_process.pid, signal.SIGTERM)
@@ -267,7 +275,14 @@ class Runner:
         command = [sys.executable, str(ROOT / "scripts/flash.py"), "--role", role,
                    "--firmware", str(self.folder / f"{role}.uf2"), "--volume", board.path,
                    "--usb-entry-id", str(board.entry)]
-        self.command(command + (["--dry-run"] if dry else []), timeout=45)
+        code = self.command(command + (["--dry-run"] if dry else []), timeout=45,
+                            allowed_codes=(0,) if dry else (0, 3))
+        if not dry:
+            self.copy_status[role] = "unconfirmed" if code == 3 else "confirmed"
+            if code == 3:
+                print(f"{role.upper()} copy UNCONFIRMED: final write/sync/close returned an I/O error. "
+                      "The board may have received data before disconnecting. "
+                      "Preserving RX evidence; no copy retry. See runner.log.", flush=True)
 
     def ready(self, timeout=20):
         deadline = time.monotonic() + timeout
@@ -311,6 +326,8 @@ class Runner:
                 "Flashing cancelled; no firmware written")
         print("Flashing RX...", flush=True)
         self.flash("rx", boards["rx"])
+        metadata["copy_status"] = self.copy_status
+        write_json(self.folder / "config.json", metadata)
         device = wait_for_rx(boards["rx"], mapping["rx"].get("app_key"))
         mapping["rx"]["app_key"] = device.key
         write_json(mapping_path, mapping)
@@ -327,10 +344,15 @@ class Runner:
         write_json(self.folder / "config.json", metadata)
         self.flash("tx", boards["tx"])
         start = time.monotonic()
-        metadata["tx_copy_completed"] = datetime.now(timezone.utc).isoformat()
+        metadata["tx_copy_returned"] = datetime.now(timezone.utc).isoformat()
+        if self.copy_status.get("tx") == "confirmed":
+            metadata["tx_copy_completed"] = metadata["tx_copy_returned"]
         write_json(self.folder / "config.json", metadata)
-        print("TX UF2 copy succeeded. Collecting RX evidence...", flush=True)
-        return self.collect(start)
+        print("Collecting RX evidence...", flush=True)
+        self.collection_status = self.collect(start)
+        if self.collection_status == "complete_observed" and "unconfirmed" in self.copy_status.values():
+            return "copy_unconfirmed"
+        return self.collection_status
 
     def finish(self, status, error=None):
         if self.capture:
@@ -339,6 +361,7 @@ class Runner:
         rate = (100 * row["observed_gaps"] / row["observed_expected"]
                 if row.get("gap_rate_valid") and row.get("observed_expected") else None)
         summary = {"status": status, "error": error, "final_diagnostics": self.last,
+                   "copy_status": self.copy_status, "collection_status": self.collection_status,
                    "observed_sequence_gap_percent": rate,
                    "tx_completion_independently_verified": False,
                    "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -346,12 +369,14 @@ class Runner:
                        "complete_observed": "Final target sequence observed; at least three stable reports and idle margin",
                        "incomplete_tail": "Nominal duration plus margin elapsed with stable idle RX; final TX sequence unobserved",
                        "timed_out": "Hard collection deadline elapsed without completion evidence",
+                       "copy_unconfirmed": "Final sequence and stable idle observed, but host could not confirm UF2 final write/sync/close",
                    }.get(status, error)}
         write_json(self.folder / "summary.json", summary)
         titles = {"complete_observed": "Experiment complete (final sequence observed)",
                   "incomplete_tail": "Experiment collection ended — INCOMPLETE: final sequence unobserved",
                   "timed_out": "Experiment TIMED OUT", "failed": "Experiment FAILED",
                   "interrupted": "Experiment INTERRUPTED"}
+        titles["copy_unconfirmed"] = "Experiment collected — UF2 COPY UNCONFIRMED (final sequence observed)"
         print(titles[status])
         for label, value in (("Frequency", f"{self.config['freq_mhz']} MHz"),
                              ("TX interval", f"{self.config['tx_interval_ms']} ms"),
@@ -366,6 +391,8 @@ class Runner:
             print(f"{label + ':':22} {value}")
         if error:
             print(error, file=sys.stderr)
+        if "unconfirmed" in self.copy_status.values():
+            print(f"UF2 copy status: {self.copy_status}; inspect runner.log. No successful-copy claim is made.")
         print(f"Results: {self.folder}")
 
 def interrupted(signum, frame):
@@ -400,7 +427,7 @@ def main(argv=None):
             for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 signal.signal(sig, signal.SIG_IGN)
             runner.finish(status, error)
-        return {"complete_observed": 0, "incomplete_tail": 2, "timed_out": 2,
+        return {"complete_observed": 0, "incomplete_tail": 2, "timed_out": 2, "copy_unconfirmed": 2,
                 "interrupted": 130, "failed": 1}[status]
 
 if __name__ == "__main__":

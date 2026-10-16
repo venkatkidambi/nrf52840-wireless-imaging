@@ -79,6 +79,22 @@ another operator pause. A copy has a 45-second command limit and is never
 automatically retried after an error. TX reboot is inferred only from subsequent
 RX sequence evidence; file copy success alone is not a transmission result.
 
+The flasher uses unbuffered 512-byte UF2 block writes and reports the failed
+operation (`open`, `write`, `fsync`, or `close`), acknowledged byte count, and
+current submitted span. EIO/ENODEV on the **final submitted block**, or during
+final sync/close after acknowledged writes, is a distinct exit-3,
+copy-unconfirmed outcome. A syscall may fail after the device receives data:
+the operator's 23:54 run returned an error on a single 4096-byte write, yet the
+same RX session later reported sequence 9999. Breaking writes into UF2 blocks
+distinguishes an early transfer error from an ambiguous final-block handoff.
+In this narrow case the runner continues bounded RX capture
+without retrying; RX flashing still requires verified enumeration and clean
+readiness before TX may be flashed. Errors before submitting the final block,
+explicit zero-progress writes, and unrelated errors still abort.
+`config.json` and `summary.json` preserve per-role `copy_status`; the summary
+also records `collection_status` independently from copy confirmation. No
+`tx_copy_completed` timestamp is written for an unconfirmed TX copy.
+
 Each new `experiments/<local timestamp with offset>_<frequency>MHz_<interval>ms_<target>/`
 directory contains:
 
@@ -106,6 +122,7 @@ three reports with stable packet/error/timing counters and RX idle time at least
 | Status | Exit | Meaning |
 | --- | ---: | --- |
 | `complete_observed` | 0 | Last target sequence (`packet_target - 1`) observed, followed by stable idle reports |
+| `copy_unconfirmed` | 2 | Final sequence and stable idle observed, but at least one UF2 copy had an unconfirmed final write/sync/close |
 | `incomplete_tail` | 2 | At least one valid packet, stable idle reports, and nominal duration + 10 seconds elapsed, but final sequence unobserved |
 | `timed_out` | 2 | Hard deadline expired without sufficient completion/idle evidence; includes runs receiving no valid packets |
 | `failed` | 1 | Build, identity, flash, serial, readiness, configuration, or run-integrity error |

@@ -177,8 +177,9 @@ class Orchestration(unittest.TestCase):
     def test_failed_command_is_reported_with_log(self):
         with tempfile.TemporaryDirectory() as folder:
             runner = run.Runner(CONFIG, Path(folder))
-            with self.assertRaisesRegex(run.RunError, "Command failed \\(7\\)"):
+            with self.assertRaisesRegex(run.RunError, "Command failed \\(7\\)") as error:
                 runner.command([sys.executable, "-c", "print('copy failed'); raise SystemExit(7)"])
+            self.assertIn("copy failed", str(error.exception))
             self.assertIn("copy failed", (Path(folder) / "runner.log").read_text())
             self.assertIsNone(runner.command_process)
 
@@ -224,13 +225,15 @@ class Orchestration(unittest.TestCase):
                     self.assertRaisesRegex(run.RunError, "configuration mismatch"):
                 runner.build()
 
-    def exercise(self, folder, fail_tx=False, confirm="FLASH"):
+    def exercise(self, folder, fail_tx=False, confirm="FLASH", unconfirmed=None, collection="complete_observed"):
         runner = run.Runner(CONFIG, Path(folder))
         events = []
         capture = Mock()
         capture.rows.return_value = [report()]
         def flash(role, board, dry=False):
             events.append((role, dry))
+            if not dry:
+                runner.copy_status[role] = "unconfirmed" if role == unconfirmed else "confirmed"
             if role == "tx" and not dry:
                 self.assertTrue(capture.rows.called)
                 if fail_tx:
@@ -242,7 +245,7 @@ class Orchestration(unittest.TestCase):
                 patch.object(run, "wait_for_rx", return_value=APP), \
                 patch.object(run, "write_json"), patch.object(usb, "verify_volume"), \
                 patch.object(run, "Capture", return_value=capture), \
-                patch.object(runner, "collect", return_value="complete_observed") as collect:
+                patch.object(runner, "collect", return_value=collection) as collect:
             try:
                 result = runner.run()
             except run.RunError as exc:
@@ -266,6 +269,46 @@ class Orchestration(unittest.TestCase):
         self.assertEqual(result, "failed")
         collect.assert_not_called()
         capture.close.assert_called_once()
+
+    def test_unconfirmed_late_sync_keeps_monitor_without_claiming_copy_success(self):
+        for role in ("rx", "tx"):
+            with self.subTest(role=role), tempfile.TemporaryDirectory() as folder:
+                events, capture, collect, result = self.exercise(folder, unconfirmed=role)
+            self.assertEqual(result, "copy_unconfirmed")
+            self.assertEqual(events.count((role, False)), 1)  # No retry.
+            collect.assert_called_once()
+            capture.close.assert_called_once()
+
+    def test_unconfirmed_copy_without_rf_evidence_still_times_out(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _, _, collect, result = self.exercise(folder, unconfirmed="tx", collection="timed_out")
+        collect.assert_called_once()
+        self.assertEqual(result, "timed_out")
+
+    def test_unconfirmed_copy_is_saved_in_summary(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runner = run.Runner(CONFIG, Path(folder))
+            runner.copy_status = {"rx": "confirmed", "tx": "unconfirmed"}
+            runner.collection_status = "complete_observed"
+            runner.last = report(have_sequence=1, last=9999, valid=9900)
+            runner.finish("copy_unconfirmed")
+            data = json.loads((Path(folder) / "summary.json").read_text())
+            self.assertEqual(data["status"], "copy_unconfirmed")
+            self.assertEqual(data["copy_status"]["tx"], "unconfirmed")
+            self.assertEqual(data["collection_status"], "complete_observed")
+
+    def test_flash_accepts_only_explicit_late_sync_code(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runner = run.Runner(CONFIG, Path(folder))
+            with patch.object(usb, "verify_volume"), patch.object(runner, "command", return_value=3) as command:
+                runner.flash("tx", TX)
+                self.assertEqual(command.call_args.kwargs["allowed_codes"], (0, 3))
+                self.assertEqual(runner.copy_status["tx"], "unconfirmed")
+                runner.flash("tx", TX, dry=True)
+                self.assertEqual(command.call_args.kwargs["allowed_codes"], (0,))
+            self.assertEqual(runner.command([sys.executable, "-c", "raise SystemExit(3)"], allowed_codes=(0, 3)), 3)
+            with self.assertRaises(run.RunError):
+                runner.command([sys.executable, "-c", "raise SystemExit(1)"], allowed_codes=(0, 3))
 
     def test_no_flash_without_explicit_confirmation(self):
         with tempfile.TemporaryDirectory() as folder:

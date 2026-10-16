@@ -1,6 +1,71 @@
 # Validation results
 
+## Operator run at 23:54 on 2026-10-15 — recovered RX evidence
+
+Run directory: `experiments/2026-10-15_235426_344758-0400_2440MHz_10ms_10000/`.
+RX identity, enumeration, and clean readiness passed. The TX host write then
+returned EIO: zero acknowledged bytes from a single submitted 4096-byte UF2.
+The original runner stopped its monitor at RX uptime 2000 ms.
+
+A subsequent **five-second read-only CDC inspection** found the same RX USB
+attachment (registry entry `4295071287`, serial `AC261B8166A787DE`) with these
+stable cumulative counters:
+
+| Measurement | Recovered value |
+| --- | ---: |
+| Frequency / interval / target | 2440 MHz / 10 ms / 10000 |
+| First / last valid sequence | 0 / 9999 |
+| Valid packets | 9857 |
+| Observed sequence gaps / expected span | 143 / 10000 |
+| Observed gap rate | 1.43% |
+| CRC / payload failures | 91 / 0 |
+| Duplicates / backwards | 0 / 0 |
+| Radio / rearm / USB errors | 0 / 0 / 0 |
+| Rearm min / mean / max | 132 / 137 / 143 µs |
+| Timing samples | 9948 |
+| Observation duration | 99990 ms |
+
+The final four reports (uptime 176001–179001 ms) are saved as
+`recovered_rx.log`; `recovered_summary.json` records the identity, final
+diagnostics, and limitations. Original config, CSV, raw log, and failed summary
+remain unchanged. This establishes final-sequence reception in the same RX
+attachment; it does not reconstruct the missing per-second trace or independently
+verify TX's SWD counters or the precise USB failure mechanism. The host's failed
+write was not evidence that zero bytes reached the device.
+
+The upstream 0.6.2 [MSC completion callback](https://github.com/adafruit/Adafruit_nRF52_Bootloader/blob/0.6.2/src/usb/msc_uf2.c)
+finishes application DFU once all UF2 blocks are counted. This is consistent
+with a reboot/host-write acknowledgement race, but the installed `dirty` build
+and actual host transfer were not traced. No bootloader changes were made.
+
+The flasher now writes individual 512-byte UF2 blocks and tracks acknowledged
+bytes separately from the submitted final span. EIO/ENODEV on that final span
+permits continued RX collection with copy status **unconfirmed**, just as a
+late sync/close error does. Earlier write failures still abort; no write is
+retried. Terminal failure output now includes the command's diagnostic log tail.
+`make test` passed **62 Python tests and both native C programs**, including the
+original single-call EIO scenario, final-block uncertainty, early-block failure,
+short-write boundaries, and no retry. No boards were flashed for this fix;
+the revised write sequence still needs operator hardware validation.
+
 ## Milestone 1.2 — 2026-10-15
+
+Follow-up after the operator's `2026-10-15_234822_345957-0400` run: logs show
+successful RX enumeration/readiness and TX preflight checks, followed by errno 5
+during the TX copy step. The original flasher did not record the operation that
+failed, so a final-sync disconnect remains a hypothesis. Capture ended before
+another complete RX report; zero packets in that summary do not establish that
+TX failed to start. The original run artifacts have been preserved unchanged.
+
+The flasher now records operation/byte progress and distinguishes full host
+writes followed by EIO/ENODEV at sync/close (exit 3, unconfirmed) from write
+failures (exit 1). The runner preserves capture for the former, records separate
+copy and collection statuses, and returns exit 2 even if final-sequence evidence
+arrives. It never retries the copy. Follow-up `make test` passed **58 Python
+tests and both native C programs**, including short writes, partial write errors,
+late sync/close errors, unrelated errors, preserved uncertainty, timeout without
+RF evidence, and continued capture. No additional hardware flashing or live
+serial monitoring was performed for this fix.
 
 Implemented `scripts/run_experiment.sh`, its standard-library Python runner,
 and macOS USB ancestry discovery. The existing safe UF2 flasher and CDC/CSV
